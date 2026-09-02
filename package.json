@@ -4,6 +4,7 @@
   "private": true,
   "description": "Monorepo for independently published xz-pi packages",
   "workspaces": [
+    "xz-pi-btw",
     "xz-pi-playwright-cli",
     "xz-pi-websearch",
     "xz-pi-vim"

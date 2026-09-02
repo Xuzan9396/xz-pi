@@ -26,6 +26,7 @@ npm --version
 
 | 包 | 功能 | npm |
 | --- | --- | --- |
+| [`xz-pi-btw`](./xz-pi-btw) | 提供不污染主会话的 `/btw` 临时旁路问答 | [![npm](https://img.shields.io/npm/v/xz-pi-btw)](https://www.npmjs.com/package/xz-pi-btw) |
 | [`xz-pi-playwright-cli`](./xz-pi-playwright-cli) | 提供 Microsoft Playwright CLI 技能，用于浏览器自动化与测试 | [![npm](https://img.shields.io/npm/v/xz-pi-playwright-cli)](https://www.npmjs.com/package/xz-pi-playwright-cli) |
 | [`xz-pi-websearch`](./xz-pi-websearch) | 提供精简的 `web_search` 和 `fetch_content` 工具 | [![npm](https://img.shields.io/npm/v/xz-pi-websearch)](https://www.npmjs.com/package/xz-pi-websearch) |
 | [`xz-pi-vim`](./xz-pi-vim) | 为 Pi 终端输入区提供 Vim 风格模态编辑 | [![npm](https://img.shields.io/npm/v/xz-pi-vim)](https://www.npmjs.com/package/xz-pi-vim) |
@@ -35,6 +36,9 @@ npm --version
 只安装需要的子包：
 
 ```bash
+# 临时旁路问答
+pi install npm:xz-pi-btw
+
 # Vim 模态编辑
 pi install npm:xz-pi-vim
 
@@ -72,6 +76,16 @@ pi install npm:xz-pi-vim@0.1.0
 显式指定版本后，该包会被固定在对应版本，不会被普通批量更新自动升级。
 
 ## 子包说明
+
+### xz-pi-btw
+
+注册 `/btw [问题]` 命令，根据当前会话已经产生的上下文打开独立、无工具的全窗口旁路会话，可连续追问且不污染主会话。按 `Ctrl+C` 返回主会话。
+
+```bash
+pi install npm:xz-pi-btw
+```
+
+详细说明见 [`xz-pi-btw/README.md`](./xz-pi-btw/README.md)。
 
 ### xz-pi-playwright-cli
 
@@ -148,6 +162,7 @@ pi install npm:xz-pi-vim
 ### 查看 npm 最新版本
 
 ```bash
+npm view xz-pi-btw version
 npm view xz-pi-playwright-cli version
 npm view xz-pi-websearch version
 npm view xz-pi-vim version
@@ -156,6 +171,7 @@ npm view xz-pi-vim version
 ### 查看用户级已安装版本
 
 ```bash
+npm list --prefix "$HOME/.pi/agent/npm" xz-pi-btw --depth=0
 npm list --prefix "$HOME/.pi/agent/npm" xz-pi-playwright-cli --depth=0
 npm list --prefix "$HOME/.pi/agent/npm" xz-pi-websearch --depth=0
 npm list --prefix "$HOME/.pi/agent/npm" xz-pi-vim --depth=0
@@ -224,6 +240,7 @@ npm run check
 临时加载尚未发布的本地包：
 
 ```bash
+pi -e ./xz-pi-btw
 pi -e ./xz-pi-vim
 pi -e ./xz-pi-websearch
 pi -e ./xz-pi-playwright-cli
@@ -233,7 +250,7 @@ pi -e ./xz-pi-playwright-cli
 
 ## 版本管理与自动发布
 
-三个子包采用独立的 [Semantic Versioning](https://semver.org/) 和 [Changesets](https://github.com/changesets/changesets)：
+各子包采用独立的 [Semantic Versioning](https://semver.org/) 和 [Changesets](https://github.com/changesets/changesets)：
 
 - `patch`：兼容性问题修复，例如 `0.1.0 → 0.1.1`
 - `minor`：向后兼容的新功能，例如 `0.1.0 → 0.2.0`
