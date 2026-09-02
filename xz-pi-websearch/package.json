@@ -3,15 +3,40 @@
   "version": "0.1.0",
   "description": "Minimal OpenAI/Codex web search and content fetch tools for Pi, with GitHub-aware handling.",
   "type": "module",
-  "keywords": ["pi-package", "pi", "web-search", "github"],
+  "keywords": [
+    "pi-package",
+    "pi",
+    "web-search",
+    "github"
+  ],
   "license": "MIT",
+  "files": [
+    "index.ts",
+    "github.ts",
+    "openai-search.ts",
+    "web-content.ts",
+    "README.md",
+    "LICENSE"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Xuzan9396/xz-pi.git",
+    "directory": "xz-pi-websearch"
+  },
+  "homepage": "https://github.com/Xuzan9396/xz-pi/tree/main/xz-pi-websearch",
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
   "scripts": {
     "test": "node --test test/*.test.ts",
     "typecheck": "tsc --noEmit",
     "check": "npm run typecheck && npm test"
   },
   "pi": {
-    "extensions": ["./index.ts"]
+    "extensions": [
+      "./index.ts"
+    ]
   },
   "dependencies": {
     "@mozilla/readability": "^0.6.0",

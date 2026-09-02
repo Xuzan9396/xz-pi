@@ -10,6 +10,16 @@
     "editor"
   ],
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Xuzan9396/xz-pi.git",
+    "directory": "xz-pi-vim"
+  },
+  "homepage": "https://github.com/Xuzan9396/xz-pi/tree/main/xz-pi-vim",
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
   "files": [
     "index.ts",
     "src",

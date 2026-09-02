@@ -1,8 +1,7 @@
 {
   "name": "xz-pi-playwright-cli",
   "version": "0.1.0",
-  "private": true,
-  "description": "Project-local Pi package for Microsoft Playwright CLI browser automation skills.",
+  "description": "Pi package for Microsoft Playwright CLI browser automation skills.",
   "license": "Apache-2.0",
   "keywords": [
     "pi-package",
@@ -10,6 +9,22 @@
     "browser-automation",
     "testing"
   ],
+  "files": [
+    "skills",
+    "README.md",
+    "LICENSE",
+    "UPSTREAM.md"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Xuzan9396/xz-pi.git",
+    "directory": "xz-pi-playwright-cli"
+  },
+  "homepage": "https://github.com/Xuzan9396/xz-pi/tree/main/xz-pi-playwright-cli",
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
   "pi": {
     "skills": [
       "./skills"
