@@ -11,11 +11,15 @@
   ],
   "scripts": {
     "changeset": "changeset",
-    "check": "npm run check --workspaces --if-present && npm pack --dry-run --workspaces",
+    "tag": "bash ./tag.sh",
+    "test:tag": "node --test scripts/tag.test.mjs",
+    "check": "npm run test:tag && npm run check --workspaces --if-present && npm pack --dry-run --workspaces",
     "version-packages": "changeset version",
     "release": "changeset publish"
   },
   "devDependencies": {
-    "@changesets/cli": "^2.29.7"
+    "@changesets/cli": "^2.29.7",
+    "enquirer": "^2.4.1",
+    "semver": "^7.7.4"
   }
 }

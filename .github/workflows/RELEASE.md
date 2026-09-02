@@ -1,7 +1,8 @@
 # 单包独立发版指南
 
-本仓库是 npm Workspaces Monorepo，使用 Changesets 管理三个相互独立的包：
+本仓库是 npm Workspaces Monorepo，使用 Changesets 管理相互独立的包：
 
+- `xz-pi-btw`
 - `xz-pi-playwright-cli`
 - `xz-pi-websearch`
 - `xz-pi-vim`
@@ -39,20 +40,32 @@ npm run check
 
 ### 2. 创建 Changeset
 
-在仓库根目录执行：
+推荐在仓库根目录使用中文发布助手：
+
+```bash
+./tag.sh
+# 或 npm run tag
+```
+
+脚本会：
+
+1. 从 npm 获取各包当前版本和发布提交 `gitHead`。
+2. 将对应包目录与发布提交对比，自动跳过没有变化的包；npm 尚不存在的新包视为有变化。
+3. 使用 `↑/↓` 移动、`Space` 多选、`Enter` 确认，可一次选择多个包。
+4. 为每个包显示中文版本选项及结果：
+   - 补丁版本：兼容性修复，例如 `0.1.0 -> 0.1.1`
+   - 次版本：向后兼容的新功能，例如 `0.1.0 -> 0.2.0`
+   - 主版本：不兼容变更，例如 `0.1.0 -> 1.0.0`
+5. 发现已有 Changeset 时展示其预计版本；重新选择该包会替换旧版本级别，避免旧 `major` 覆盖新的 `patch`。
+6. 生成一个包含多个包的 Changeset，并可选择运行检查、提交和推送。
+
+仍可使用 Changesets 原始英文界面：
 
 ```bash
 npm run changeset
 ```
 
-交互式操作中：
-
-1. 只选择 `xz-pi-websearch`。
-2. 选择版本级别：
-   - `patch`：兼容性修复，例如 `0.1.0 -> 0.1.1`
-   - `minor`：向后兼容的新功能，例如 `0.1.0 -> 0.2.0`
-   - `major`：不兼容变更，例如 `0.1.0 -> 1.0.0`
-3. 填写面向用户的变更摘要。
+手动操作时选择目标包、`patch` / `minor` / `major`，再填写面向用户的变更摘要。
 
 命令会生成类似下面的文件：
 
@@ -129,6 +142,30 @@ npm view xz-pi-playwright-cli version
 ```
 
 目标包应升级到新版本，其他两个包应保持原版本。
+
+## 自动化触发规则
+
+当前两个 Workflow 的触发规则如下：
+
+1. 向 `main` 推送任何提交：同时触发 `CI` 和 `Release`。
+2. 普通业务提交包含 `.changeset/*.md` 时：`Release` 创建或更新 `changeset-release/main` 分支上的 `chore: release packages` PR，此时不会发布 npm。
+3. Release PR 会触发 `pull_request` 类型的 `CI`。
+4. 合并 Release PR：再次产生一次 `main` push，`Release` 执行 `npm run release`，自动将尚未发布的新版本发布到 npm。
+
+因此 npm 发布本身是自动的，但默认保留“人工检查并合并 Release PR”这道版本确认闸门。
+
+### 为什么 Release PR 的 CI 可能要求手动批准
+
+Release PR 由 `github-actions[bot]` 创建。若仓库的 Actions 策略要求首次贡献者工作流获得批准，Bot 第一次创建 PR 时会显示 `Action required`。这是 GitHub 的工作流安全审批，不是 npm 发布失败。
+
+可在以下位置调整：
+
+```text
+Repository Settings → Actions → General
+→ Approval for running fork pull request workflows from contributors
+```
+
+建议使用“只审批 GitHub 新用户”的策略，而不是关闭所有安全限制。第一次批准并合并 Bot 的 PR 后，在“首次贡献者”策略下通常也不会重复要求批准。
 
 ## GitHub 仓库要求
 

@@ -256,7 +256,17 @@ pi -e ./xz-pi-playwright-cli
 - `minor`：向后兼容的新功能，例如 `0.1.0 → 0.2.0`
 - `major`：不兼容变更，例如 `0.1.0 → 1.0.0`
 
-修改可发布子包后执行：
+修改可发布子包后，推荐运行中文多包发布助手：
+
+```bash
+./tag.sh
+# 或
+npm run tag
+```
+
+脚本会读取 npm 已发布版本和 `gitHead`，自动跳过目录内容未变化的包；使用 `Space` 多选包、`Enter` 确认，并为每个包显示中文版本类型以及升级前后的版本号。脚本还会避免重复 Changeset，并可选择执行全仓检查、提交和推送。
+
+也可以继续使用 Changesets 原始英文界面：
 
 ```bash
 npm run changeset
@@ -264,9 +274,9 @@ npm run changeset
 
 然后：
 
-1. 选择发生变化的子包
-2. 选择 `patch`、`minor` 或 `major`
-3. 填写变更摘要
+1. 选择发生变化的一个或多个子包
+2. 选择补丁版本、次版本或主版本
+3. 填写中文变更摘要
 4. 提交源码和生成的 `.changeset/*.md`
 5. 推送或合并到 `main`
 6. GitHub Actions 自动创建或更新 **chore: release packages** PR
