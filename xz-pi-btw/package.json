@@ -1,6 +1,6 @@
 {
   "name": "xz-pi-btw",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Ephemeral /btw side questions for Pi using the current session context",
   "type": "module",
   "keywords": [
