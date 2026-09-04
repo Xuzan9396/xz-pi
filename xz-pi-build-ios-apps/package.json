@@ -1,6 +1,6 @@
 {
   "name": "xz-pi-build-ios-apps",
-  "version": "0.1.0",
+  "version": "0.1.2",
   "description": "Pi package for building, profiling, debugging, and refining iOS apps with SwiftUI and Xcode workflows.",
   "license": "MIT",
   "keywords": [
