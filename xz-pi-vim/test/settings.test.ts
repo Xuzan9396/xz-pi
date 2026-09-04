@@ -19,11 +19,19 @@ test("project settings are ignored until the project is trusted", () => {
     cursorShape: false,
     modeColors: true,
     exCommand: true,
+    inlineSlashCompletion: true,
+    toolReferences: true,
+    activateReferencedTools: true,
+    highlightToolReferences: true,
   });
   assert.deepEqual(readXzPiVimSettings(cwd, home, true), {
     startInNormal: true,
     cursorShape: true,
     modeColors: true,
     exCommand: true,
+    inlineSlashCompletion: true,
+    toolReferences: true,
+    activateReferencedTools: true,
+    highlightToolReferences: true,
   });
 });

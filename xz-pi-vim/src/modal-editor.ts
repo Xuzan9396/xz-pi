@@ -2,14 +2,18 @@ import { CustomEditor } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { stripSoftwareCursorWhenHardwareCursorIsUsed } from "./cursor-shape.js";
 import { parseExCommand } from "./ex-command.js";
-import { isBackspaceInput, isCtrlRInput, isDigit, isEnterInput, isEscapeInput, isPrintableInput } from "./input-keys.js";
+import { isBackspaceInput, isCtrlRInput, isDeleteInput, isDigit, isEnterInput, isEscapeInput, isPrintableInput } from "./input-keys.js";
 import { clampCursor, cursorToOffset, graphemeEndAt, graphemeStartBefore, lineStartOffsets, moveByMotion, offsetToCursor, rangeForMotion } from "./motions.js";
 import { EMPTY_REGISTER, normalizeRegister } from "./registers.js";
+import { ToolReferenceTracker, type CompletedToolReference, type ToolReference } from "./tool-references.js";
 import type { ActiveMode, CursorPosition, EditorSnapshot, MotionKey, PendingOperator, TextRange, VimMode, VimRegister } from "./types.js";
 import { characterSelectionRange, lineSelectionRange } from "./visual-selection.js";
 
 type ConstructorArgs = ConstructorParameters<typeof CustomEditor>;
-type ThemeLike = ConstructorArgs[1] & { fg?: (name: string, text: string) => string };
+type ThemeLike = ConstructorArgs[1] & {
+  fg?: (name: string, text: string) => string;
+  bg?: (name: string, text: string) => string;
+};
 type TuiLike = ConstructorArgs[0] & { requestRender(): void };
 
 type MutableEditorInternals = {
@@ -17,6 +21,7 @@ type MutableEditorInternals = {
   preferredVisualCol?: number | null;
   lastAction?: string | null;
   onChange?: (text: string) => void;
+  autocompleteState?: unknown;
 };
 
 export type XzModalEditorOptions = {
@@ -24,6 +29,10 @@ export type XzModalEditorOptions = {
   cursorShape?: boolean;
   modeColors?: boolean;
   exCommand?: boolean;
+  inlineSlashCompletion?: boolean;
+  toolReferences?: boolean;
+  highlightToolReferences?: boolean;
+  referenceTracker?: ToolReferenceTracker;
 };
 
 const MOTION_KEYS = new Set<MotionKey>(["h", "j", "k", "l", "0", "^", "$", "w", "b", "e", "G"]);
@@ -50,6 +59,11 @@ export class XzModalEditor extends CustomEditor {
   private readonly cursorShapeEnabled: boolean;
   private readonly modeColorsEnabled: boolean;
   private readonly exCommandEnabled: boolean;
+  private readonly inlineSlashCompletionEnabled: boolean;
+  private readonly toolReferencesEnabled: boolean;
+  private readonly highlightToolReferencesEnabled: boolean;
+  private readonly referenceTracker: ToolReferenceTracker;
+  private pendingCompletedReference: CompletedToolReference | null = null;
 
   constructor(tui: ConstructorArgs[0], theme: ConstructorArgs[1], keybindings: ConstructorArgs[2], options: XzModalEditorOptions = {}) {
     super(tui, theme, keybindings);
@@ -58,6 +72,10 @@ export class XzModalEditor extends CustomEditor {
     this.cursorShapeEnabled = options.cursorShape ?? false;
     this.modeColorsEnabled = options.modeColors ?? true;
     this.exCommandEnabled = options.exCommand ?? true;
+    this.inlineSlashCompletionEnabled = options.inlineSlashCompletion ?? true;
+    this.toolReferencesEnabled = options.toolReferences ?? true;
+    this.highlightToolReferencesEnabled = options.highlightToolReferences ?? true;
+    this.referenceTracker = options.referenceTracker ?? new ToolReferenceTracker();
     this.mode = options.startInNormal ? "normal" : "insert";
     this.insertSessionStart = this.mode === "insert" ? this.captureSnapshot() : null;
   }
@@ -87,13 +105,21 @@ export class XzModalEditor extends CustomEditor {
     fn(this.getMode());
   }
 
+  queueCompletedToolReference(completion: CompletedToolReference): void {
+    this.pendingCompletedReference = completion;
+  }
+
   override handleInput(data: string): void {
     if (isEscapeInput(data)) {
       this.handleEscape(data);
       return;
     }
     if (this.mode === "insert") {
-      super.handleInput(data);
+      if (this.toolReferencesEnabled && this.deleteToolReferenceForInput(data)) return;
+      this.passToSuperAndSyncReferences(data);
+      if (this.inlineSlashCompletionEnabled && isPrintableInput(data) && this.shouldOpenInlineSlashAutocomplete()) {
+        this.triggerInlineSlashAutocomplete();
+      }
       return;
     }
     if (this.pendingExCommand !== null) {
@@ -117,6 +143,7 @@ export class XzModalEditor extends CustomEditor {
   override render(width: number): string[] {
     const lines = super.render(width);
     if (this.cursorShapeEnabled) stripSoftwareCursorWhenHardwareCursorIsUsed(lines);
+    if (this.toolReferencesEnabled && this.highlightToolReferencesEnabled) this.highlightToolReferences(lines);
     if (lines.length === 0 || width <= 0) return lines;
     const label = this.colorModeLabel(this.buildModeLabel());
     const lastIndex = lines.length - 1;
@@ -251,7 +278,7 @@ export class XzModalEditor extends CustomEditor {
         return;
       default:
         this.takeCount();
-        if (!isPrintableInput(data)) super.handleInput(data);
+        if (!isPrintableInput(data)) this.passToSuperAndSyncReferences(data);
     }
   }
 
@@ -433,6 +460,7 @@ export class XzModalEditor extends CustomEditor {
   }
 
   private deleteOrChangeRange(range: TextRange, change: boolean): void {
+    range = this.referenceTracker.expandRange(range);
     if (range.end <= range.start) {
       if (change) this.enterInsert(this.captureSnapshot());
       return;
@@ -456,6 +484,7 @@ export class XzModalEditor extends CustomEditor {
   }
 
   private yankRange(range: TextRange): void {
+    range = this.referenceTracker.expandRange(range);
     if (range.end <= range.start) return;
     this.register = normalizeRegister(this.getText().slice(range.start, range.end), range.linewise ? "line" : "character");
     this.resetPending();
@@ -615,14 +644,16 @@ export class XzModalEditor extends CustomEditor {
   }
 
   private captureSnapshot(): EditorSnapshot {
-    return { text: this.getText(), cursor: this.getCursor() };
+    return { text: this.getText(), cursor: this.getCursor(), toolReferences: this.referenceTracker.snapshot() };
   }
 
   private restoreSnapshot(snapshot: EditorSnapshot): void {
     this.writeState(snapshot.text, snapshot.cursor);
+    this.referenceTracker.restore(snapshot.toolReferences);
   }
 
   private writeState(text: string, cursor: CursorPosition, insertMode = this.mode === "insert"): void {
+    const before = this.getText();
     const internal = this as unknown as MutableEditorInternals;
     const lines = text.replace(/\r\n?/g, "\n").replace(/\t/g, "    ").split("\n");
     internal.state.lines = lines.length > 0 ? lines : [""];
@@ -631,6 +662,7 @@ export class XzModalEditor extends CustomEditor {
     internal.state.cursorCol = safeCursor.col;
     internal.preferredVisualCol = null;
     internal.lastAction = null;
+    this.referenceTracker.reconcile(before, this.getText());
     internal.onChange?.(this.getText());
     this.requestRender();
   }
@@ -653,6 +685,76 @@ export class XzModalEditor extends CustomEditor {
   private emitModeChange(): void {
     this.modeChangeFn(this.getMode());
     this.requestRender();
+  }
+
+  private passToSuperAndSyncReferences(data: string): void {
+    const before = this.getText();
+    super.handleInput(data);
+    this.referenceTracker.reconcile(before, this.getText());
+    this.applyPendingCompletedReference();
+  }
+
+  private deleteToolReferenceForInput(data: string): boolean {
+    const offset = cursorToOffset(this.getText(), this.getCursor());
+    const reference = isBackspaceInput(data)
+      ? this.referenceTracker.findForBackwardDelete(offset)
+      : isDeleteInput(data)
+        ? this.referenceTracker.findForForwardDelete(offset)
+        : undefined;
+    if (!reference) return false;
+
+    const text = this.getText();
+    const nextText = text.slice(0, reference.start) + text.slice(reference.end);
+    this.writeState(nextText, offsetToCursor(nextText, reference.start), true);
+    return true;
+  }
+
+  private applyPendingCompletedReference(): void {
+    const completion = this.pendingCompletedReference;
+    this.pendingCompletedReference = null;
+    if (!completion || completion.text !== this.getText()) return;
+    if (this.referenceTracker.hasNameAt(completion.text, completion.reference)) {
+      this.referenceTracker.add(completion.reference);
+      this.requestRender();
+    }
+  }
+
+  private highlightToolReferences(lines: string[]): void {
+    const text = this.getText();
+    const references = this.referenceTracker.getAll().filter((reference) => this.referenceTracker.hasNameAt(text, reference));
+    const byName = new Map(references.map((reference) => [reference.name, reference]));
+    for (const reference of byName.values()) {
+      const escaped = reference.name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const pattern = new RegExp(`(^|[^A-Za-z0-9_.:-])(${escaped})(?=$|[^A-Za-z0-9_.:-])`, "g");
+      for (let index = 0; index < lines.length; index++) {
+        lines[index] = (lines[index] ?? "").replace(pattern, (_match, prefix: string, name: string) => {
+          return `${prefix}${this.colorToolReference(name, reference)}`;
+        });
+      }
+    }
+  }
+
+  private colorToolReference(name: string, reference: ToolReference): string {
+    if (!this.themeRef.fg) return `\x1b[1m${name}\x1b[22m`;
+    const color = reference.kind === "mcp" ? "accent" : reference.kind === "package" ? "warning" : "syntaxFunction";
+    const foreground = this.themeRef.fg(color, name);
+    return reference.kind === "mcp" && this.themeRef.bg ? this.themeRef.bg("selectedBg", foreground) : foreground;
+  }
+
+  private shouldOpenInlineSlashAutocomplete(): boolean {
+    const internal = this as unknown as MutableEditorInternals;
+    if (internal.autocompleteState) return false;
+    const line = internal.state.lines[internal.state.cursorLine] ?? "";
+    const beforeCursor = line.slice(0, internal.state.cursorCol);
+    return /[ \t]\/[^\s/]*$/.test(beforeCursor);
+  }
+
+  private triggerInlineSlashAutocomplete(): void {
+    // Pi currently exposes autocomplete providers but not an API for opening the menu.
+    // CustomEditor inherits this runtime method from pi-tui's Editor; feature-detect it
+    // so a future rename degrades to manual Tab completion instead of crashing.
+    const editor = this as unknown as { tryTriggerAutocomplete?: () => void };
+    editor.tryTriggerAutocomplete?.();
   }
 
   private requestRender(): void {

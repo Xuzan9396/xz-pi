@@ -1,7 +1,9 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { CursorShapeController } from "./src/cursor-shape.js";
 import { XzModalEditor } from "./src/modal-editor.js";
+import { createInlineSlashAutocompleteProvider } from "./src/slash-autocomplete.js";
 import { readXzPiVimSettings } from "./src/settings.js";
+import { buildReferenceCatalog, createToolReferenceAutocompleteProvider, ToolReferenceTracker, type ToolReference } from "./src/tool-references.js";
 
 export { XzModalEditor } from "./src/modal-editor.js";
 
@@ -14,9 +16,26 @@ const BUILTIN_COMMANDS = new Set([
 export default function xzPiVim(pi: ExtensionAPI): void {
   let cursorController: CursorShapeController | null = null;
   let reloadCursorTimer: ReturnType<typeof setTimeout> | null = null;
+  const referenceTracker = new ToolReferenceTracker();
+  let activeEditor: XzModalEditor | null = null;
+  let activateReferencedTools = true;
+  let referencesForTurn: ToolReference[] = [];
 
   pi.on("session_start", (event, ctx) => {
     const settings = readXzPiVimSettings(ctx.cwd, process.env.HOME, ctx.isProjectTrusted());
+    referenceTracker.clear();
+    activeEditor = null;
+    activateReferencedTools = settings.activateReferencedTools;
+    if (settings.inlineSlashCompletion) {
+      ctx.ui.addAutocompleteProvider((current) => createInlineSlashAutocompleteProvider(current));
+    }
+    if (settings.toolReferences) {
+      ctx.ui.addAutocompleteProvider((current) => createToolReferenceAutocompleteProvider(
+        current,
+        () => buildReferenceCatalog(pi.getAllTools()),
+        (completion) => activeEditor?.queueCompletedToolReference(completion),
+      ));
+    }
     ctx.ui.setEditorComponent((tui, theme, keybindings) => {
       cursorController?.dispose();
       cursorController = new CursorShapeController(tui, settings.cursorShape);
@@ -25,7 +44,12 @@ export default function xzPiVim(pi: ExtensionAPI): void {
         cursorShape: settings.cursorShape,
         modeColors: settings.modeColors,
         exCommand: settings.exCommand,
+        inlineSlashCompletion: settings.inlineSlashCompletion,
+        toolReferences: settings.toolReferences,
+        highlightToolReferences: settings.highlightToolReferences,
+        referenceTracker,
       });
+      activeEditor = editor;
       editor.setNotifyFn((message) => ctx.ui.notify(message, "warning"));
       editor.setQuitFn(() => ctx.shutdown());
       editor.setCommandNamesFn(() => new Set([
@@ -50,10 +74,34 @@ export default function xzPiVim(pi: ExtensionAPI): void {
     }
   });
 
+  pi.on("input", (event) => {
+    if (event.source !== "interactive") return;
+    const references = referenceTracker.consumeSubmitted(event.text);
+    if (references.length === 0) return;
+    referencesForTurn = references;
+    if (activateReferencedTools) {
+      const memberTools = references.flatMap((reference) => reference.memberToolNames);
+      pi.setActiveTools([...new Set([...pi.getActiveTools(), ...memberTools])]);
+    }
+  });
+
+  pi.on("before_agent_start", (event) => {
+    if (referencesForTurn.length === 0) return;
+    const references = referencesForTurn;
+    referencesForTurn = [];
+    const summary = references.map((reference) => `${reference.kind}: ${reference.name}`).join(", ");
+    return {
+      systemPrompt: `${event.systemPrompt}\n\nThe user explicitly referenced these capabilities (${summary}). Prefer their associated tools when appropriate for the request.`,
+    };
+  });
+
   pi.on("session_shutdown", (event) => {
     if (reloadCursorTimer) clearTimeout(reloadCursorTimer);
     reloadCursorTimer = null;
     cursorController?.dispose(event.reason);
     cursorController = null;
+    activeEditor = null;
+    referenceTracker.clear();
+    referencesForTurn = [];
   });
 }

@@ -6,6 +6,10 @@ export type XzPiVimSettings = {
   cursorShape: boolean;
   modeColors: boolean;
   exCommand: boolean;
+  inlineSlashCompletion: boolean;
+  toolReferences: boolean;
+  activateReferencedTools: boolean;
+  highlightToolReferences: boolean;
 };
 
 export const DEFAULT_SETTINGS: XzPiVimSettings = {
@@ -13,6 +17,10 @@ export const DEFAULT_SETTINGS: XzPiVimSettings = {
   cursorShape: true,
   modeColors: true,
   exCommand: true,
+  inlineSlashCompletion: true,
+  toolReferences: true,
+  activateReferencedTools: true,
+  highlightToolReferences: true,
 };
 
 function readJson(path: string): unknown {
@@ -34,6 +42,10 @@ export function readXzPiVimSettings(cwd: string, home = process.env.HOME, projec
     cursorShape: booleanOrDefault(merged.cursorShape, DEFAULT_SETTINGS.cursorShape),
     modeColors: booleanOrDefault(merged.modeColors, DEFAULT_SETTINGS.modeColors),
     exCommand: booleanOrDefault(merged.exCommand, DEFAULT_SETTINGS.exCommand),
+    inlineSlashCompletion: booleanOrDefault(merged.inlineSlashCompletion, DEFAULT_SETTINGS.inlineSlashCompletion),
+    toolReferences: booleanOrDefault(merged.toolReferences, DEFAULT_SETTINGS.toolReferences),
+    activateReferencedTools: booleanOrDefault(merged.activateReferencedTools, DEFAULT_SETTINGS.activateReferencedTools),
+    highlightToolReferences: booleanOrDefault(merged.highlightToolReferences, DEFAULT_SETTINGS.highlightToolReferences),
   };
 }
 

@@ -16,6 +16,10 @@ export function isCtrlRInput(data: string): boolean {
   return data === "\x12" || matchesKey(data, "ctrl+r");
 }
 
+export function isDeleteInput(data: string): boolean {
+  return data === "\x1b[3~" || matchesKey(data, "delete") || matchesKey(data, "shift+delete");
+}
+
 export function isPrintableInput(data: string): boolean {
   if (data.length === 0) return false;
   for (const character of data) {

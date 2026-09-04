@@ -1,3 +1,5 @@
+import type { ToolReference } from "./tool-references.js";
+
 export type VimMode = "insert" | "normal" | "visual" | "visual-line";
 
 export type ActiveMode = VimMode | "ex";
@@ -14,6 +16,7 @@ export type CursorPosition = {
 export type EditorSnapshot = {
   text: string;
   cursor: CursorPosition;
+  toolReferences?: ToolReference[];
 };
 
 export type RegisterKind = "character" | "line";

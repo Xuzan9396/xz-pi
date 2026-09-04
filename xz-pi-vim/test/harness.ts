@@ -23,8 +23,8 @@ export const stubKeybindings = {
   },
 } as unknown as EditorArgs[2];
 
-export function createEditor(text = ""): XzModalEditor {
-  const editor = new XzModalEditor(stubTui, stubTheme, stubKeybindings);
+export function createEditor(text = "", options: EditorArgs[3] = {}): XzModalEditor {
+  const editor = new XzModalEditor(stubTui, stubTheme, stubKeybindings, options);
   for (const character of text) editor.handleInput(character === "\n" ? "\n" : character);
   editor.handleInput("\x1b");
   editor.handleInput("g");

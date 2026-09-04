@@ -9,6 +9,20 @@ test("escape enters NORMAL and i returns to INSERT", () => {
   assert.equal(editor.getMode(), "insert");
 });
 
+test("insert mode opens autocomplete for slash after whitespace", () => {
+  const editor = createEditor("");
+  let triggerCount = 0;
+  (editor as unknown as { tryTriggerAutocomplete: () => void }).tryTriggerAutocomplete = () => {
+    triggerCount++;
+    (editor as unknown as { autocompleteState: unknown }).autocompleteState = {};
+  };
+
+  send(editor, ["i", "h", "i", " ", "/"]);
+  assert.equal(triggerCount, 1);
+  editor.handleInput("x");
+  assert.equal(triggerCount, 1);
+});
+
 test("normal motions, delete and count work", () => {
   const editor = createEditor("one two three");
   send(editor, ["w", "2", "x"]);

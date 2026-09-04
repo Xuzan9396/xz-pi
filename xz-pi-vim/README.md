@@ -27,6 +27,7 @@ pi install /Users/admin/go/tmp_xz/xz-pi-vim
 - `VISUAL`：字符选区。
 - `V-LINE`：整行选区。
 - `EX`：执行退出、Pi slash command 或 shell command。
+- INSERT 模式支持在行中空白后输入 `/`，立即模糊匹配 Pi 命令。
 
 ## 首版按键
 
@@ -69,6 +70,38 @@ p P
 - `c`：修改。
 - `y`：复制到 unnamed register。
 
+### 行中 Slash Command 补全
+
+INSERT 模式下，`/` 不再局限于行首。只要它位于空白之后，就会立即打开 Pi 命令模糊匹配：
+
+```text
+请帮我 /          展示可用命令
+请帮我 /rel       匹配 /reload
+第二行 /tree      多行输入中同样生效
+```
+
+URL 和已包含后续 `/` 的路径不会作为行中命令 token 匹配。关闭该功能可设置 `inlineSlashCompletion: false`。
+
+### Tool / MCP Tag 引用
+
+INSERT 模式下输入 `$` 可模糊搜索 Pi 当前注册的能力。空查询和搜索结果始终按 MCP → Package → Tool 排序：
+
+```text
+◆ context7_mcp       MCP · 2 tools
+◇ xz-pi-websearch    PACKAGE · 2 tools
+· web_search         TOOL · Search the web
+```
+
+```text
+帮我用 $context
+```
+
+选择 MCP、Package 或具体 Tool 后，`$context` 会替换成对应名称的彩色 Tag。`$` 和列表图标只是触发/显示符，不会保留或提交给模型。MCP Tag 关联该 Server 下的工具，Package Tag 关联该包注册的工具，Tool Tag 只关联单个工具。
+
+Tag 是原子编辑单元：在 Tag 内或边缘使用 Backspace、Delete、`x`、`X`、`d`、`c` 或 Visual 删除时会删除整个 Tag。在 Tag 内插入字符会令其退化为普通文本。复制得到的是不含颜色控制符的纯名称。
+
+提交时，仍存在的 Tag 所关联工具会按配置自动启用，并提示模型在适合时优先使用；工具不会被强制直接调用。Pi 暂无公开的 MCP/Package 列表 API，因此目录从 `pi.getAllTools().sourceInfo` 聚合，只展示当前已注册的 MCP，以及实际提供 Tool 的 Package。
+
 ### EX
 
 ```text
@@ -92,7 +125,11 @@ p P
     "startInNormal": false,
     "cursorShape": true,
     "modeColors": true,
-    "exCommand": true
+    "exCommand": true,
+    "inlineSlashCompletion": true,
+    "toolReferences": true,
+    "activateReferencedTools": true,
+    "highlightToolReferences": true
   }
 }
 ```
