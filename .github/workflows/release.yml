@@ -4,10 +4,10 @@ on:
   push:
     branches:
       - main
+  workflow_dispatch:
 
 permissions:
   contents: write
-  pull-requests: write
   id-token: write
 
 concurrency:
@@ -18,8 +18,11 @@ jobs:
   release:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
+      - name: Checkout latest main
         uses: actions/checkout@v5
+        with:
+          ref: main
+          fetch-depth: 0
 
       - name: Setup Node.js
         uses: actions/setup-node@v5
@@ -34,14 +37,42 @@ jobs:
       - name: Test and validate packages
         run: npm run check
 
-      - name: Create release PR or publish packages
-        uses: changesets/action@v1
-        with:
-          publish: npm run release
-          version: npm run version-packages
-          title: "chore: release packages"
-          commit: "chore: release packages"
+      - name: Detect pending changesets
+        id: changesets
+        shell: bash
+        run: |
+          if find .changeset -maxdepth 1 -type f -name '*.md' ! -name 'README.md' | grep -q .; then
+            echo "pending=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "pending=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Update package versions
+        if: steps.changesets.outputs.pending == 'true'
+        run: |
+          npm run version-packages
+          npm install --package-lock-only --ignore-scripts
+
+      - name: Commit and push version updates
+        if: steps.changesets.outputs.pending == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "No version changes to commit."
+          else
+            git commit -m "chore: release packages [skip ci]"
+            git push origin HEAD:main
+          fi
+
+      # This always runs so a manually re-run workflow can recover when the
+      # version commit succeeded but a previous npm publish attempt failed.
+      - name: Publish packages
+        run: npm run release
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Push release tags
+        run: git push origin --tags

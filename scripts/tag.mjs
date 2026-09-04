@@ -42,6 +42,10 @@ export function highestBump(left, right) {
   return BUMP_RANK[left] >= BUMP_RANK[right] ? left : right;
 }
 
+export function hasReachedVersion(actual, expected) {
+  return Boolean(semver.valid(actual) && semver.valid(expected) && semver.gte(actual, expected));
+}
+
 export function parseChangeset(content) {
   const match = content.match(/^---\s*\n([\s\S]*?)\n---(?:\s*\n)?([\s\S]*)$/);
   if (!match) return { releases: [], summary: content.trim() };
@@ -108,6 +112,35 @@ function getRegistryInfo(name) {
     version: typeof value === "string" ? value : value.version ?? null,
     gitHead: typeof value === "object" && value ? value.gitHead ?? null : null,
   };
+}
+
+export async function waitForPublishedVersions(expectedVersions, options = {}) {
+  const {
+    lookupVersion = (name) => getRegistryInfo(name).version,
+    maxAttempts = 60,
+    intervalMs = 10_000,
+    sleep = (milliseconds) => new Promise((resolvePromise) => setTimeout(resolvePromise, milliseconds)),
+  } = options;
+  const observed = new Map();
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    let complete = true;
+    for (const { name, version } of expectedVersions) {
+      try {
+        observed.set(name, lookupVersion(name));
+      } catch {
+        observed.set(name, null);
+      }
+      if (!hasReachedVersion(observed.get(name), version)) complete = false;
+    }
+    if (complete) return observed;
+    if (attempt < maxAttempts) await sleep(intervalMs);
+  }
+
+  const details = expectedVersions
+    .map(({ name, version }) => `${name}（期望 ${version}，当前 ${observed.get(name) ?? "读取失败"}）`)
+    .join("、");
+  throw new Error(`等待 npm 发布超时：${details}。请检查 GitHub Release Action 日志。`);
 }
 
 function gitObjectExists(ref) {
@@ -226,7 +259,7 @@ function printReleasePlan(releases, untouchedPending, packagesByName) {
   }
 }
 
-async function maybeTestCommitAndPush(changesetPath) {
+async function maybeTestCommitAndPush(changesetPath, expectedVersions) {
   const { runTests } = await Enquirer.prompt({
     type: "confirm",
     name: "runTests",
@@ -241,12 +274,17 @@ async function maybeTestCommitAndPush(changesetPath) {
   const { shouldPush } = await Enquirer.prompt({
     type: "confirm",
     name: "shouldPush",
-    message: "是否执行 git add -A、提交并推送当前全部修改？",
-    initial: false,
+    message: "是否提交并推送，由 GitHub Action 自动发布到 npm？",
+    initial: true,
   });
   if (!shouldPush) {
     console.log(`\n已生成 ${relative(ROOT_DIR, changesetPath)}，请检查后自行提交。`);
     return;
+  }
+
+  const branch = run("git", ["branch", "--show-current"], { capture: true });
+  if (branch.status !== 0 || branch.stdout.trim() !== "main") {
+    throw new Error("全自动发布只能从 main 分支触发，请切换到 main 后重试");
   }
 
   const status = run("git", ["status", "--porcelain"], { capture: true });
@@ -264,12 +302,23 @@ async function maybeTestCommitAndPush(changesetPath) {
   if (run("git", ["add", "-A"]).status !== 0) throw new Error("git add 失败");
   if (run("git", ["commit", "-m", commitMessage.trim()]).status !== 0) throw new Error("git commit 失败");
   if (run("git", ["push"]).status !== 0) throw new Error("git push 失败");
-  console.log("\n已推送。GitHub Release Workflow 将创建或更新发布 PR；合并发布 PR 后 npm 自动发布。 ");
+
+  console.log("\n已推送，正在等待 GitHub Release Action 完成 npm 发布…");
+  const published = await waitForPublishedVersions(expectedVersions);
+  console.log("\n=== npm 发布完成 ===");
+  for (const { name } of expectedVersions) console.log(`  ${name}@${published.get(name)}`);
+
+  const pull = run("git", ["pull", "--rebase", "origin", "main"]);
+  if (pull.status !== 0) {
+    console.warn("npm 已发布，但自动同步远程版本提交失败，请稍后执行 git pull --rebase origin main。");
+  } else {
+    console.log("本地 main 已同步 GitHub Action 生成的版本提交。");
+  }
 }
 
 export async function main() {
   if (process.argv.includes("--help") || process.argv.includes("-h")) {
-    console.log(`用法：./tag.sh\n\n中文多包 Changeset 发布助手。它不会直接创建 Git Tag 或绕过发布 PR。`);
+    console.log(`用法：./tag.sh\n\n中文多包发布助手：推送 main 后由 GitHub Action 自动更新版本、发布 npm 并创建 Git Tag。`);
     return;
   }
   if (!process.stdin.isTTY || !process.stdout.isTTY) {
@@ -334,7 +383,13 @@ export async function main() {
     "utf8",
   );
   console.log(`\n已生成：${relative(ROOT_DIR, changesetPath)}`);
-  await maybeTestCommitAndPush(changesetPath);
+  const finalBumps = new Map(untouchedPending);
+  for (const { name, bump } of releases) finalBumps.set(name, bump);
+  const expectedVersions = [...finalBumps].map(([name, bump]) => ({
+    name,
+    version: bumpVersion(packagesByName.get(name).version, bump),
+  }));
+  await maybeTestCommitAndPush(changesetPath, expectedVersions);
 }
 
 const invokedPath = process.argv[1] ? pathToFileURL(resolve(process.argv[1])).href : "";
