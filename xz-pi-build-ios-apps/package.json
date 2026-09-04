@@ -1,0 +1,42 @@
+{
+  "name": "xz-pi-build-ios-apps",
+  "version": "0.1.0",
+  "description": "Pi package for building, profiling, debugging, and refining iOS apps with SwiftUI and Xcode workflows.",
+  "license": "MIT",
+  "keywords": [
+    "pi-package",
+    "ios",
+    "swift",
+    "swiftui",
+    "xcode",
+    "app-intents",
+    "performance",
+    "debugging"
+  ],
+  "files": [
+    "skills",
+    "assets",
+    "README.md",
+    "UPSTREAM.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "check": "node --test test/package.test.mjs"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Xuzan9396/xz-pi.git",
+    "directory": "xz-pi-build-ios-apps"
+  },
+  "homepage": "https://github.com/Xuzan9396/xz-pi/tree/main/xz-pi-build-ios-apps",
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "pi": {
+    "skills": [
+      "./skills"
+    ],
+    "image": "./assets/app-icon.png"
+  }
+}

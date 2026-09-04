@@ -51,6 +51,7 @@ jobs:
         if: steps.changesets.outputs.pending == 'true'
         run: |
           npm run version-packages
+          npm run apply-initial-versions
           npm install --package-lock-only --ignore-scripts
 
       - name: Commit and push version updates

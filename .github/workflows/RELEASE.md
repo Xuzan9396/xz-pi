@@ -3,6 +3,7 @@
 本仓库是 npm Workspaces Monorepo，使用 Changesets 独立管理以下包的版本：
 
 - `xz-pi-btw`
+- `xz-pi-build-ios-apps`
 - `xz-pi-playwright-cli`
 - `xz-pi-websearch`
 - `xz-pi-vim`
@@ -22,7 +23,7 @@ npm run tag
 脚本会：
 
 1. 查询各包当前 npm 版本，并检测相对已发布版本的代码变化。
-2. 选择要发布的包和 `patch`、`minor`、`major` 升级类型。
+2. 选择要发布的包和 `patch`、`minor`、`major` 升级类型；npm 尚未发布的包也可手动填写首次发布版本。
 3. 生成或更新 `.changeset/*.md`。
 4. 按选择执行全仓检查。
 5. 经确认后提交全部修改并推送 `main`。
@@ -38,12 +39,17 @@ npm run tag
 
 1. 安装依赖并运行 `npm run check`。
 2. 发现待处理 Changeset 时运行 `changeset version`。
-3. 更新 `package-lock.json`。
-4. 将版本号、Changelog 和已消费 Changeset 的变更提交到 `main`。
-5. 运行 `changeset publish`，只发布版本高于 npm Registry 的包。
-6. 将 npm 发布产生的 Git Tag 推送到 GitHub。
+3. 如存在手动初始化版本，将 Changesets 的临时升级结果校正为指定版本，并同步修正 Changelog。
+4. 更新 `package-lock.json`。
+5. 将版本号、Changelog 和已消费 Changeset 的变更提交到 `main`。
+6. 运行 `changeset publish`，只发布版本高于 npm Registry 的包。
+7. 将 npm 发布产生的 Git Tag 推送到 GitHub。
 
 Workflow 也支持在 GitHub 上手动重新运行。即使版本提交已经成功、npm 发布暂时失败，再次运行也会尝试发布尚未存在于 npm Registry 的版本。
+
+## 首次发布版本
+
+对于 npm 尚未发布的包，`tag.sh` 的升级类型列表会额外显示“手动填写初始化版本”。输入必须是标准稳定 SemVer（例如 `0.1.0`），GitHub Release Action 会在消费 Changeset 后精确应用该版本，不会将它再次 bump 成 `0.1.1`。
 
 ## 版本示例
 

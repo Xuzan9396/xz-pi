@@ -6,6 +6,11 @@ import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import Enquirer from "enquirer";
 import semver from "semver";
+import {
+  readInitialVersions,
+  validateInitialVersion,
+  writeInitialVersions,
+} from "./initial-versions.mjs";
 
 export const BUMP_LABELS = {
   patch: "补丁版本（兼容性修复）",
@@ -191,9 +196,11 @@ function printPackageTable(packages) {
   console.log("\n包状态：");
   for (const pkg of packages) {
     const npmVersion = pkg.registry.published ? pkg.registry.version : "未发布";
-    const pending = pkg.pendingBump
-      ? `；已有${BUMP_LABELS[pkg.pendingBump]}，预计 ${pkg.version} → ${bumpVersion(pkg.version, pkg.pendingBump)}`
-      : "";
+    const pending = pkg.pendingInitialVersion
+      ? `；已有手动初始化版本，预计 ${pkg.version} → ${pkg.pendingInitialVersion}`
+      : pkg.pendingBump
+        ? `；已有${BUMP_LABELS[pkg.pendingBump]}，预计 ${pkg.version} → ${bumpVersion(pkg.version, pkg.pendingBump)}`
+        : "";
     const icon = pkg.changed ? "●" : "○";
     console.log(`  ${icon} ${pkg.name}：本地 ${pkg.version}；npm ${npmVersion}；${pkg.reason}${pending}`);
   }
@@ -220,7 +227,7 @@ async function selectReleases(candidates) {
     message: "选择需要发布的包（↑/↓ 移动，Space 多选，Enter 确认）",
     choices: candidates.map((pkg) => ({
       name: pkg.name,
-      message: `${pkg.name}（本地 ${pkg.version}，npm ${pkg.registry.version ?? "未发布"}${pkg.pendingBump ? `，已登记${BUMP_LABELS[pkg.pendingBump]}` : ""}）`,
+      message: `${pkg.name}（本地 ${pkg.version}，npm ${pkg.registry.version ?? "未发布"}${pkg.pendingInitialVersion ? `，已登记初始化版本 ${pkg.pendingInitialVersion}` : pkg.pendingBump ? `，已登记${BUMP_LABELS[pkg.pendingBump]}` : ""}）`,
     })),
     initial: candidates.filter((pkg) => pkg.pendingBump).map((pkg) => pkg.name),
     required: true,
@@ -233,15 +240,43 @@ async function selectReleases(candidates) {
       name: bump,
       message: `${BUMP_LABELS[bump]}：${pkg.version} → ${bumpVersion(pkg.version, bump)}`,
     }));
-    const initial = pkg.pendingBump ? ["patch", "minor", "major"].indexOf(pkg.pendingBump) : 0;
-    const { bump } = await Enquirer.prompt({
+    if (!pkg.registry.published) {
+      choices.push({
+        name: "initial",
+        message: `手动填写初始化版本${pkg.pendingInitialVersion ? `（已填写 ${pkg.pendingInitialVersion}）` : ""}`,
+      });
+    }
+    const bumpNames = choices.map(({ name: choiceName }) => choiceName);
+    const initial = pkg.pendingInitialVersion
+      ? bumpNames.indexOf("initial")
+      : Math.max(0, bumpNames.indexOf(pkg.pendingBump ?? "patch"));
+    const { bump: selectedBump } = await Enquirer.prompt({
       type: "select",
       name: "bump",
       message: `${pkg.name} 选择升级类型`,
       choices,
       initial,
     });
-    releases.push({ pkg, name, bump, nextVersion: bumpVersion(pkg.version, bump) });
+
+    if (selectedBump === "initial") {
+      const { initialVersion } = await Enquirer.prompt({
+        type: "input",
+        name: "initialVersion",
+        message: `${pkg.name} 填写首次发布版本`,
+        initial: pkg.pendingInitialVersion ?? pkg.version,
+        validate: validateInitialVersion,
+      });
+      const nextVersion = initialVersion.trim();
+      releases.push({ pkg, name, bump: "patch", mode: "initial", nextVersion });
+    } else {
+      releases.push({
+        pkg,
+        name,
+        bump: selectedBump,
+        mode: "bump",
+        nextVersion: bumpVersion(pkg.version, selectedBump),
+      });
+    }
   }
   return releases;
 }
@@ -250,12 +285,15 @@ function printReleasePlan(releases, untouchedPending, packagesByName) {
   console.log("\n=== 发布计划 ===");
   for (const release of releases) {
     const npmVersion = release.pkg.registry.version ?? "未发布";
-    console.log(`  ${release.name}：npm ${npmVersion}；${release.pkg.version} → ${release.nextVersion}（${BUMP_LABELS[release.bump]}）`);
+    const label = release.mode === "initial" ? "手动初始化版本" : BUMP_LABELS[release.bump];
+    console.log(`  ${release.name}：npm ${npmVersion}；${release.pkg.version} → ${release.nextVersion}（${label}）`);
   }
   for (const [name, bump] of untouchedPending) {
     const pkg = packagesByName.get(name);
     if (!pkg) continue;
-    console.log(`  ${name}：保留已有 Changeset；${pkg.version} → ${bumpVersion(pkg.version, bump)}（${BUMP_LABELS[bump]}）`);
+    const nextVersion = pkg.pendingInitialVersion ?? bumpVersion(pkg.version, bump);
+    const label = pkg.pendingInitialVersion ? "手动初始化版本" : BUMP_LABELS[bump];
+    console.log(`  ${name}：保留已有 Changeset；${pkg.version} → ${nextVersion}（${label}）`);
   }
 }
 
@@ -329,10 +367,17 @@ export async function main() {
   console.log("正在读取 npm 版本并检查包目录变化…");
 
   const changesets = readPendingChangesets();
+  const initialVersions = readInitialVersions(ROOT_DIR);
   const packages = getWorkspacePackages().map((pkg) => {
     const registry = getRegistryInfo(pkg.name);
     const change = packageHasChanges(pkg, registry);
-    return { ...pkg, registry, ...change, pendingBump: changesets.byPackage.get(pkg.name) };
+    return {
+      ...pkg,
+      registry,
+      ...change,
+      pendingBump: changesets.byPackage.get(pkg.name),
+      pendingInitialVersion: initialVersions[pkg.name]?.version,
+    };
   });
   const packagesByName = new Map(packages.map((pkg) => [pkg.name, pkg]));
   printPackageTable(packages);
@@ -376,6 +421,16 @@ export async function main() {
   // A selected package replaces its previous pending entries, so choosing a
   // lower bump really takes effect instead of being overridden by an old major.
   replaceSelectedPendingChangesets(changesets, selectedNames);
+  for (const release of releases) {
+    delete initialVersions[release.name];
+    if (release.mode === "initial") {
+      initialVersions[release.name] = {
+        version: release.nextVersion,
+        generatedVersion: bumpVersion(release.pkg.version, release.bump),
+      };
+    }
+  }
+  writeInitialVersions(ROOT_DIR, initialVersions);
   const changesetPath = join(CHANGESET_DIR, createChangesetName());
   writeFileSync(
     changesetPath,
@@ -383,12 +438,16 @@ export async function main() {
     "utf8",
   );
   console.log(`\n已生成：${relative(ROOT_DIR, changesetPath)}`);
-  const finalBumps = new Map(untouchedPending);
-  for (const { name, bump } of releases) finalBumps.set(name, bump);
-  const expectedVersions = [...finalBumps].map(([name, bump]) => ({
+  const expectedVersions = untouchedPending.map(([name, bump]) => ({
     name,
-    version: bumpVersion(packagesByName.get(name).version, bump),
+    version: packagesByName.get(name).pendingInitialVersion
+      ?? bumpVersion(packagesByName.get(name).version, bump),
   }));
+  for (const { name, nextVersion } of releases) {
+    const existing = expectedVersions.find((item) => item.name === name);
+    if (existing) existing.version = nextVersion;
+    else expectedVersions.push({ name, version: nextVersion });
+  }
   await maybeTestCommitAndPush(changesetPath, expectedVersions);
 }
 

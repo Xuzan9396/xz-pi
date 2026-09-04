@@ -5,6 +5,7 @@
   "description": "Monorepo for independently published xz-pi packages",
   "workspaces": [
     "xz-pi-btw",
+    "xz-pi-build-ios-apps",
     "xz-pi-playwright-cli",
     "xz-pi-websearch",
     "xz-pi-vim"
@@ -15,6 +16,7 @@
     "test:tag": "node --test scripts/tag.test.mjs",
     "check": "npm run test:tag && npm run check --workspaces --if-present && npm pack --dry-run --workspaces",
     "version-packages": "changeset version",
+    "apply-initial-versions": "node scripts/initial-versions.mjs",
     "release": "changeset publish"
   },
   "devDependencies": {

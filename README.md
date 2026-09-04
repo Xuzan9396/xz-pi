@@ -27,6 +27,7 @@ npm --version
 | 包 | 功能 | npm |
 | --- | --- | --- |
 | [`xz-pi-btw`](./xz-pi-btw) | 提供不污染主会话的 `/btw` 临时旁路问答 | [![npm](https://img.shields.io/npm/v/xz-pi-btw)](https://www.npmjs.com/package/xz-pi-btw) |
+| [`xz-pi-build-ios-apps`](./xz-pi-build-ios-apps) | 提供 9 个 iOS、SwiftUI、Xcode 调试与性能分析技能 | [![npm](https://img.shields.io/npm/v/xz-pi-build-ios-apps)](https://www.npmjs.com/package/xz-pi-build-ios-apps) |
 | [`xz-pi-playwright-cli`](./xz-pi-playwright-cli) | 提供 Microsoft Playwright CLI 技能，用于浏览器自动化与测试 | [![npm](https://img.shields.io/npm/v/xz-pi-playwright-cli)](https://www.npmjs.com/package/xz-pi-playwright-cli) |
 | [`xz-pi-websearch`](./xz-pi-websearch) | 提供精简的 `web_search` 和 `fetch_content` 工具 | [![npm](https://img.shields.io/npm/v/xz-pi-websearch)](https://www.npmjs.com/package/xz-pi-websearch) |
 | [`xz-pi-vim`](./xz-pi-vim) | 为 Pi 终端输入区提供 Vim 风格模态编辑 | [![npm](https://img.shields.io/npm/v/xz-pi-vim)](https://www.npmjs.com/package/xz-pi-vim) |
@@ -38,6 +39,9 @@ npm --version
 ```bash
 # 临时旁路问答
 pi install npm:xz-pi-btw
+
+# iOS 与 SwiftUI 构建、调试和性能技能
+pi install npm:xz-pi-build-ios-apps
 
 # Vim 模态编辑
 pi install npm:xz-pi-vim
@@ -86,6 +90,25 @@ pi install npm:xz-pi-btw
 ```
 
 详细说明见 [`xz-pi-btw/README.md`](./xz-pi-btw/README.md)。
+
+### xz-pi-build-ios-apps
+
+提供 9 个技能，覆盖 App Intents、SwiftUI UI 模式与重构、Liquid Glass、性能分析、ETTrace、内存泄漏、Simulator 调试和浏览器镜像。
+
+```bash
+pi install npm:xz-pi-build-ios-apps
+```
+
+该包要求 macOS、Xcode 和 Node.js。调试与镜像流程按需使用经过固定版本的 CLI：
+
+```bash
+npx --yes xcodebuildmcp@2.7.0 --help
+npx --yes serve-sim@0.1.46 --help
+```
+
+Pi 不加载上游 Codex 插件的 `.mcp.json`；本包已将调试流程改为 XcodeBuildMCP CLI，并将 Simulator 镜像改为普通浏览器工作流。
+
+详细说明见 [`xz-pi-build-ios-apps/README.md`](./xz-pi-build-ios-apps/README.md)。
 
 ### xz-pi-playwright-cli
 
@@ -163,6 +186,7 @@ pi install npm:xz-pi-vim
 
 ```bash
 npm view xz-pi-btw version
+npm view xz-pi-build-ios-apps version
 npm view xz-pi-playwright-cli version
 npm view xz-pi-websearch version
 npm view xz-pi-vim version
@@ -172,6 +196,7 @@ npm view xz-pi-vim version
 
 ```bash
 npm list --prefix "$HOME/.pi/agent/npm" xz-pi-btw --depth=0
+npm list --prefix "$HOME/.pi/agent/npm" xz-pi-build-ios-apps --depth=0
 npm list --prefix "$HOME/.pi/agent/npm" xz-pi-playwright-cli --depth=0
 npm list --prefix "$HOME/.pi/agent/npm" xz-pi-websearch --depth=0
 npm list --prefix "$HOME/.pi/agent/npm" xz-pi-vim --depth=0
@@ -213,6 +238,7 @@ pi install npm:xz-pi-vim@0.2.0
 pi remove npm:xz-pi-vim
 pi remove npm:xz-pi-websearch
 pi remove npm:xz-pi-playwright-cli
+pi remove npm:xz-pi-build-ios-apps
 ```
 
 项目级卸载：
@@ -241,6 +267,7 @@ npm run check
 
 ```bash
 pi -e ./xz-pi-btw
+pi -e ./xz-pi-build-ios-apps
 pi -e ./xz-pi-vim
 pi -e ./xz-pi-websearch
 pi -e ./xz-pi-playwright-cli
@@ -264,7 +291,7 @@ pi -e ./xz-pi-playwright-cli
 npm run tag
 ```
 
-脚本会读取 npm 已发布版本和 `gitHead`，自动跳过目录内容未变化的包；使用 `Space` 多选包、`Enter` 确认，并为每个包显示中文版本类型以及升级前后的版本号。脚本还会避免重复 Changeset，并可选择执行全仓检查、提交和推送。
+脚本会读取 npm 已发布版本和 `gitHead`，自动跳过目录内容未变化的包；使用 `Space` 多选包、`Enter` 确认，并为每个包显示中文版本类型以及升级前后的版本号。npm 尚未发布的包还可以选择“手动填写初始化版本”，输入 `0.1.0` 这类标准稳定 SemVer，首次发布时会精确使用该版本而不会再次升级。脚本还会避免重复 Changeset，并可选择执行全仓检查、提交和推送。
 
 也可以继续使用 Changesets 原始英文界面：
 
