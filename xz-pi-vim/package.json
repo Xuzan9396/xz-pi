@@ -1,6 +1,6 @@
 {
   "name": "xz-pi-vim",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "A local Vim-style modal editor package for Pi's terminal prompt",
   "type": "module",
   "keywords": [
