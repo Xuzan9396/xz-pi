@@ -1,5 +1,11 @@
 # xz-pi-subagents
 
+## 0.1.2
+
+### Patch Changes
+
+- 2075e89: min
+
 ## 0.1.1
 
 ### Patch Changes
