@@ -3,6 +3,7 @@ import { CursorShapeController } from "./src/cursor-shape.js";
 import { XzModalEditor } from "./src/modal-editor.js";
 import { createInlineSlashAutocompleteProvider } from "./src/slash-autocomplete.js";
 import { readXzPiVimSettings } from "./src/settings.js";
+import { readEnabledPackageSources } from "./src/package-references.js";
 import { buildReferenceCatalog, createToolReferenceAutocompleteProvider, ToolReferenceTracker, type ToolReference } from "./src/tool-references.js";
 
 export { XzModalEditor } from "./src/modal-editor.js";
@@ -30,9 +31,10 @@ export default function xzPiVim(pi: ExtensionAPI): void {
       ctx.ui.addAutocompleteProvider((current) => createInlineSlashAutocompleteProvider(current));
     }
     if (settings.toolReferences) {
+      const enabledPackages = readEnabledPackageSources(ctx.cwd, ctx.isProjectTrusted());
       ctx.ui.addAutocompleteProvider((current) => createToolReferenceAutocompleteProvider(
         current,
-        () => buildReferenceCatalog(pi.getAllTools()),
+        () => buildReferenceCatalog(pi.getAllTools(), enabledPackages),
         (completion) => activeEditor?.queueCompletedToolReference(completion),
       ));
     }

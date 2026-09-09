@@ -68,6 +68,43 @@ test("catalog groups MCP and package references before individual tools", () => 
   assert.deepEqual(catalog[0]?.memberToolNames, ["mcp__context7_mcp__query_docs"]);
 });
 
+test("catalog includes enabled packages without tools and deduplicates package versions", async () => {
+  const catalog = buildReferenceCatalog([], [
+    "npm:xz-pi-vim", "npm:xz-pi-btw", "npm:xz-pi-vim@0.2.0", "npm:@scope/pkg@1.0.0", "npm:@scope/pkg",
+  ]);
+  assert.deepEqual(catalog.map(({ name, kind, memberToolNames }) => ({ name, kind, memberToolNames })), [
+    { name: "xz-pi-vim", kind: "package", memberToolNames: [] },
+    { name: "xz-pi-btw", kind: "package", memberToolNames: [] },
+    { name: "@scope/pkg", kind: "package", memberToolNames: [] },
+  ]);
+  let completed: CompletedToolReference | undefined;
+  const provider = createToolReferenceAutocompleteProvider(fallback, () => catalog, (value) => { completed = value; });
+  const suggestions = await provider.getSuggestions(["$btw"], 0, 4, { signal });
+  assert.equal(suggestions?.items[0]?.value, "xz-pi-btw");
+  const result = provider.applyCompletion(["$btw"], 0, 4, suggestions!.items[0]!, suggestions!.prefix);
+  assert.equal(result.lines[0], "xz-pi-btw ");
+  assert.equal(completed?.reference.kind, "package");
+  assert.deepEqual(completed?.reference.memberToolNames, []);
+});
+
+test("MCP-only packages remain selectable as packages with the correct reference kind", async () => {
+  const catalog = buildReferenceCatalog([{
+    name: "mcp",
+    description: "MCP gateway",
+    sourceInfo: { source: "npm:pi-mcp-adapter", path: "/pkg/index.ts", origin: "package" },
+  }], ["npm:pi-mcp-adapter@1.0.0"]);
+  assert.equal(catalog.filter((value) => value.kind === "package").length, 1);
+  assert.deepEqual(catalog.find((value) => value.kind === "package")?.memberToolNames, ["mcp"]);
+  let completed: CompletedToolReference | undefined;
+  const provider = createToolReferenceAutocompleteProvider(fallback, () => catalog, (value) => { completed = value; });
+  const suggestions = await provider.getSuggestions(["$"], 0, 1, { signal });
+  for (const kind of ["mcp", "package"] as const) {
+    const item = suggestions!.items.find((value) => value.description?.startsWith(kind.toUpperCase()))!;
+    provider.applyCompletion(["$"], 0, 1, item, "$");
+    assert.equal(completed?.reference.kind, kind);
+  }
+});
+
 test("dollar suggestions prioritize MCP, then packages, then tools", async () => {
   const candidates = [
     { ...candidate, name: "read", kind: "tool" as const, source: "builtin" as const, memberToolNames: ["read"] },

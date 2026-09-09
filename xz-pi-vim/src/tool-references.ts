@@ -72,9 +72,18 @@ function packageName(source: string): string {
   return clean.split(/[\\/]/).filter(Boolean).at(-1) ?? clean;
 }
 
-export function buildReferenceCatalog(tools: readonly ReferenceToolMetadata[]): ToolReferenceCandidate[] {
+export function buildReferenceCatalog(
+  tools: readonly ReferenceToolMetadata[],
+  enabledPackages: readonly string[] = [],
+): ToolReferenceCandidate[] {
   const mcpGroups = new Map<string, ReferenceToolMetadata[]>();
   const packageGroups = new Map<string, ReferenceToolMetadata[]>();
+  const packageSources = new Map<string, string>();
+  for (const source of enabledPackages) {
+    const name = packageName(source);
+    packageGroups.set(name, []);
+    packageSources.set(name, source);
+  }
   const toolCandidates: ToolReferenceCandidate[] = [];
 
   for (const tool of tools) {
@@ -95,6 +104,7 @@ export function buildReferenceCatalog(tools: readonly ReferenceToolMetadata[]): 
     if (tool.sourceInfo.origin === "package") {
       const name = packageName(tool.sourceInfo.source);
       packageGroups.set(name, [...(packageGroups.get(name) ?? []), tool]);
+      packageSources.set(name, tool.sourceInfo.source);
     }
   }
 
@@ -107,13 +117,12 @@ export function buildReferenceCatalog(tools: readonly ReferenceToolMetadata[]): 
     memberToolNames: members.map((tool) => tool.name),
   }));
   const packageCandidates = [...packageGroups.entries()]
-    .filter(([, members]) => members.some((tool) => classifyToolSource(tool) !== "mcp"))
     .map(([name, members]): ToolReferenceCandidate => ({
       name,
-      description: `${members.length} tool${members.length === 1 ? "" : "s"}`,
+      description: members.length > 0 ? `${members.length} tool${members.length === 1 ? "" : "s"}` : "enabled package",
       kind: "package",
       source: "extension",
-      sourceLabel: members[0]!.sourceInfo.source,
+      sourceLabel: packageSources.get(name)!,
       memberToolNames: members.map((tool) => tool.name),
     }));
 
@@ -171,7 +180,8 @@ export function createToolReferenceAutocompleteProvider(
         const newLines = [...lines];
         newLines[cursorLine] = `${beforePrefix}${item.value} ${afterCursor}`;
         const start = cursorOffset(lines, cursorLine, beforePrefix.length);
-        const candidate = getCandidates().find((value) => value.name === item.value);
+        const candidate = getCandidates().find((value) =>
+          value.name === item.value && item.label === `${KIND_ICON[value.kind]} ${value.name}`);
         if (candidate) {
           onComplete({
             text: newLines.join("\n"),

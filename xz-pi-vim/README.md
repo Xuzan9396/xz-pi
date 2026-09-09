@@ -84,7 +84,7 @@ URL 和已包含后续 `/` 的路径不会作为行中命令 token 匹配。关�
 
 ### Tool / MCP Tag 引用
 
-INSERT 模式下输入 `$` 可模糊搜索 Pi 当前注册的能力。空查询和搜索结果始终按 MCP → Package → Tool 排序：
+INSERT 模式下输入 `$` 可模糊搜索 Pi 当前注册的工具/MCP，以及全局或当前可信项目中启用的 Package。空查询和搜索结果始终按 MCP → Package → Tool 排序：
 
 ```text
 ◆ context7_mcp       MCP · 2 tools
@@ -100,7 +100,7 @@ INSERT 模式下输入 `$` 可模糊搜索 Pi 当前注册的能力。空查询�
 
 Tag 是原子编辑单元：在 Tag 内或边缘使用 Backspace、Delete、`x`、`X`、`d`、`c` 或 Visual 删除时会删除整个 Tag。在 Tag 内插入字符会令其退化为普通文本。复制得到的是不含颜色控制符的纯名称。
 
-提交时，仍存在的 Tag 所关联工具会按配置自动启用，并提示模型在适合时优先使用；工具不会被强制直接调用。Pi 暂无公开的 MCP/Package 列表 API，因此目录从 `pi.getAllTools().sourceInfo` 聚合，只展示当前已注册的 MCP，以及实际提供 Tool 的 Package。
+提交时，仍存在的 Tag 所关联工具会按配置自动启用，并提示模型在适合时优先使用；工具不会被强制直接调用。MCP/Tool 目录从 `pi.getAllTools().sourceInfo` 聚合。Package 额外合并全局和项目配置：任一作用域启用就展示，同名包去重，两边均关闭则不从配置添加。没有注册 Tool 的包（如 `xz-pi-vim`、`xz-pi-btw`）也会显示为 `enabled package`，选择后只添加引用，不执行命令或虚构工具。未信任项目的配置不参与；配置修改后执行 `/reload` 刷新。
 
 ### EX
 
