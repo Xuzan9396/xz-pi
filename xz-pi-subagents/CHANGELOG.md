@@ -1,5 +1,11 @@
 # xz-pi-subagents
 
+## 0.1.1
+
+### Patch Changes
+
+- dc1b449: worktree
+
 ## Unreleased
 
 - Add explicit task operations, task-specific context, and validated structured result handoffs.

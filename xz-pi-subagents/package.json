@@ -1,6 +1,6 @@
 {
   "name": "xz-pi-subagents",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Focused multi-agent delegation with an interactive under-editor task list for Pi",
   "type": "module",
   "keywords": [
