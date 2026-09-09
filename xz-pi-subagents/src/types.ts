@@ -1,6 +1,5 @@
 export const TOOL_NAME = "xz_subagents_run";
 export const CHILD_ENV = "XZ_PI_SUBAGENT_CONFIG";
-export const MIN_TASKS = 2;
 export const MAX_TASKS = 8;
 export const MAX_CONCURRENCY = 4;
 export const READ_TOOLS = new Set(["read", "grep", "find", "ls"]);

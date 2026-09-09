@@ -1,12 +1,10 @@
 import { isAbsolute } from "node:path";
-import { DELEGATION_TOOLS, MAX_CONCURRENCY, MAX_TASKS, MIN_TASKS, READ_TOOLS, type BatchInput, type LaunchPlan, type Resources, type TaskOperation } from "./types.js";
+import { DELEGATION_TOOLS, MAX_CONCURRENCY, MAX_TASKS, READ_TOOLS, type BatchInput, type LaunchPlan, type Resources, type TaskOperation } from "./types.js";
 
 const OPERATIONS = new Set<TaskOperation>(["general", "inspect", "research", "implement", "test", "review", "integrate"]);
 
 export function planBatch(input: BatchInput, resources: Resources): LaunchPlan[] {
-  if (!Array.isArray(input.tasks) || input.tasks.length < MIN_TASKS || input.tasks.length > MAX_TASKS) {
-    throw new Error(`Supply ${MIN_TASKS}–${MAX_TASKS} tasks in one batch; execute a single task directly in main.`);
-  }
+  if (!input.tasks.length || input.tasks.length > MAX_TASKS) throw new Error(`Supply 1–${MAX_TASKS} tasks in one batch.`);
   if (input.context !== undefined && (typeof input.context !== "string" || input.context.length > 64_000)) throw new Error("Invalid shared context");
   const concurrency = input.concurrency ?? MAX_CONCURRENCY;
   if (!Number.isInteger(concurrency) || concurrency < 1 || concurrency > MAX_CONCURRENCY) throw new Error("concurrency must be 1–4");

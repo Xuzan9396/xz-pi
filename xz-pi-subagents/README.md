@@ -77,7 +77,7 @@ xz_subagents_run({
 })
 ```
 
-- 每批 2–8 个任务；每个 main 会话一次只接受一批。只有一个任务时必须由 main 直接执行，禁止启动子 agent。必须把并行任务放进**同一次调用**。
+- 每批 1–8 个任务；每个 main 会话一次只接受一批。必须把并行任务放进**同一次调用**。
 - `concurrency`：1–4，默认 4；适用于两种工具模式，不再仅限 read 任务。
 - `operation`：`general/inspect/research/implement/test/review/integrate`，用于约束职责和结构化结果；省略为兼容模式 `general`。
 - 任务级 `context` 会追加到批次公共 `context` 后，只发给该任务。
@@ -156,18 +156,12 @@ xz_subagents_run({
 
 ```javascript
 xz_subagents_run({
-  tasks: [
-    {
-      name: "docs-api", mode: "write", operation: "research",
-      task: "通过已配置的 context7 MCP 查询这个库的 API，返回来源。",
-      tools: ["read", "mcp"], skills: []
-    },
-    {
-      name: "docs-migration", mode: "write", operation: "research",
-      task: "通过已配置的 context7 MCP 查询这个库的迁移指南，返回来源。",
-      tools: ["read", "mcp"], skills: []
-    }
-  ]
+  tasks: [{
+    name: "docs", mode: "write", operation: "research",
+    task: "通过已配置的 context7 MCP 查询这个库的 API，返回来源。",
+    tools: ["read", "mcp"],
+    skills: []
+  }]
 })
 ```
 
