@@ -7,7 +7,7 @@ import { planBatch } from "./src/policy.js";
 import { cleanText } from "./src/protocol.js";
 import { createRunner, piInvocation } from "./src/runner.js";
 import { integrateTaskWorktrees } from "./src/worktree.js";
-import { CHILD_ENV, DELEGATION_TOOLS, MAX_TASKS, TOOL_NAME, type BatchInput, type SkillRef, type TaskRecord } from "./src/types.js";
+import { CHILD_ENV, DELEGATION_TOOLS, MAX_TASKS, MIN_TASKS, TOOL_NAME, type BatchInput, type SkillRef, type TaskRecord } from "./src/types.js";
 import { FleetView } from "./src/ui.js";
 
 export default function xzSubagents(pi: ExtensionAPI): void {
@@ -29,10 +29,10 @@ export default function xzSubagents(pi: ExtensionAPI): void {
   pi.registerTool({
     name: TOOL_NAME,
     label: "Multi agents",
-    description: "Delegate 1–8 named tasks to independent Pi processes and WAIT for ALL results. Main resumes only after every task and any automatic worktree integration settles. Use operation to define the task contract. For concurrent code implementation, the model may select mode:'write', operation:'implement', isolation:'worktree'; strict sibling worktrees are patched back to main serially and removed only after successful application. Never use worktrees for research, inspection, or ordinary tests. Worktree setup requires a clean Git checkout and never falls back to shared cwd. Default read mode permits only main's active filesystem read/grep/find/ls tools. Write mode permits main's tools. Both modes run concurrently by default; exclusive is scheduling only. tools narrows, never expands main's active tools. Children share project files, not conversation history; supply concise shared/task context explicitly. No background daemon or recursive delegation.",
+    description: "Delegate 2–8 named tasks to independent Pi processes and WAIT for ALL results. Never call this tool for a single task; execute that task directly in main. Main resumes only after every task and any automatic worktree integration settles. Use operation to define the task contract. For concurrent code implementation, the model may select mode:'write', operation:'implement', isolation:'worktree'; strict sibling worktrees are patched back to main serially and removed only after successful application. Never use worktrees for research, inspection, or ordinary tests. Worktree setup requires a clean Git checkout and never falls back to shared cwd. Default read mode permits only main's active filesystem read/grep/find/ls tools. Write mode permits main's tools. Both modes run concurrently by default; exclusive is scheduling only. tools narrows, never expands main's active tools. Children share project files, not conversation history; supply concise shared/task context explicitly. No background daemon or recursive delegation.",
     promptSnippet: "Delegate independent tasks in parallel and wait for all results",
     promptGuidelines: [
-      "Use xz_subagents_run when the user requests multi-agent work or delegation; keep small ordinary tasks in main.",
+      "Use xz_subagents_run only for 2–8 independent tasks. Never delegate a single task; execute it directly in main.",
       "Put independent tasks in ONE xz_subagents_run call. Use separate rounds for dependencies. Give each child a self-contained task and report cancelled/failed tasks honestly.",
       "Tool access is not scheduling: independent web research can use mode: write with operation: research, narrow tools, and no worktree. Use worktree only for concurrent implementation that changes code. Set exclusive: true for a shared device/browser or non-isolated mutation.",
       "For precise delivery, give each task explicit paths, constraints and acceptance evidence. Use separate wait barriers: parallel inspect/research, then implementation, then fresh review/tests. Set requireChanges:false only when an isolated implementation may legitimately be a no-op.",
@@ -50,7 +50,7 @@ export default function xzSubagents(pi: ExtensionAPI): void {
         model: Type.Optional(Type.String({ description: "Exact provider/modelId; defaults to main's current model" })),
         tools: Type.Optional(Type.Array(Type.String(), { maxItems: 128 })),
         skills: Type.Optional(Type.Array(Type.String(), { maxItems: 128, description: "Names from main's loaded skills; omit to inherit, [] to disable" })),
-      }), { minItems: 1, maxItems: MAX_TASKS }),
+      }), { minItems: MIN_TASKS, maxItems: MAX_TASKS }),
       context: Type.Optional(Type.String({ maxLength: 64_000, description: "Relevant background to share with all tasks, not the full main history" })),
       concurrency: Type.Optional(Type.Integer({ minimum: 1, maximum: 4, description: "Concurrent tasks in either mode, default 4; explicit exclusive tasks run alone" })),
       timeoutSeconds: Type.Optional(Type.Integer({ minimum: 1, maximum: 1800, description: "Deadline per started task, default 600 seconds; queue time excluded" })),
