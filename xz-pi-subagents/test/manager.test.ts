@@ -89,6 +89,15 @@ test("abort-before-start, parent abort, dispose and competing tool calls are bou
   await assert.rejects(manager.run([plan()], 1, never), /shut down/);
 });
 
+test("main remains busy and waits for batch finalization after all children settle", async () => {
+  const manager = new TaskManager(); const finalize = deferred<void>(); let finalized = false;
+  const batch = manager.run([plan()], 1, async () => success("ok"), undefined, async () => { await finalize.promise; finalized = true; });
+  await tick(); await tick();
+  assert.equal(manager.busy, true); assert.equal(finalized, false);
+  finalize.resolve(); await batch;
+  assert.equal(finalized, true); assert.equal(manager.busy, false);
+});
+
 test("a throwing runner or UI listener cannot strand the batch", async () => {
   const manager = new TaskManager(); manager.subscribe(() => { throw new Error("UI failed"); });
   const records = await manager.run([plan("a"), plan("b")], 2, async () => { throw new Error("spawn failed"); });

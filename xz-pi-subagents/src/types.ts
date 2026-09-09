@@ -9,10 +9,17 @@ export const DELEGATION_TOOLS = new Set([
   "agent_start", "agent_resume", "agent_wait", "agent_wait_all", "agent_cancel", "agent_steer", "agent_result",
 ]);
 
+export type TaskOperation = "general" | "inspect" | "research" | "implement" | "test" | "review" | "integrate";
+export type TaskIsolation = "worktree";
+
 export interface TaskInput {
   name: string;
   task: string;
   mode?: "read" | "write";
+  operation?: TaskOperation;
+  context?: string;
+  isolation?: TaskIsolation;
+  requireChanges?: boolean;
   exclusive?: boolean;
   model?: string;
   tools?: string[];
@@ -45,11 +52,36 @@ export interface LaunchPlan {
 }
 export type TaskStatus = "queued" | "running" | "stopping" | "completed" | "failed" | "cancelled" | "timed_out";
 export const isTerminal = (status: TaskStatus): boolean => !["queued", "running", "stopping"].includes(status);
+export interface StructuredTaskResult {
+  status: "completed" | "blocked" | "failed";
+  summary: string;
+  changedFiles: string[];
+  commandsRun: Array<{ command: string; exitCode: number; summary: string }>;
+  tests: Array<{ name: string; passed: boolean; evidence: string }>;
+  findings: Array<{ severity: "high" | "medium" | "low"; description: string; file?: string; line?: number }>;
+  assumptions: string[];
+  blockers: string[];
+}
+export interface WorktreeHandoff {
+  repoRoot: string;
+  worktreePath: string;
+  executionCwd: string;
+  branch: string;
+  baseCommit: string;
+  patchPath: string;
+  handoffPath: string;
+  changedFiles: string[];
+  integration: "pending" | "applied" | "no_changes" | "conflict" | "preserved";
+  cleanupError?: string;
+}
 export interface TaskRecord {
   id: string;
   name: string;
   task: string;
   mode: "read" | "write";
+  operation: TaskOperation;
+  isolation?: TaskIsolation;
+  requireChanges: boolean;
   exclusive: boolean;
   model: string;
   status: TaskStatus;
@@ -60,14 +92,18 @@ export interface TaskRecord {
   output: string;
   error?: string;
   artifactDir?: string;
+  taskResult?: StructuredTaskResult;
+  worktree?: WorktreeHandoff;
   tokens: number;
 }
 export interface RunOutcome {
   status: "completed" | "failed" | "cancelled" | "timed_out";
   output: string;
   error?: string;
+  taskResult?: StructuredTaskResult;
 }
 export type TaskRunner = (plan: LaunchPlan, record: TaskRecord, signal: AbortSignal, changed: () => void) => Promise<RunOutcome>;
+export type BatchFinalizer = (plans: LaunchPlan[], records: TaskRecord[], changed: () => void) => Promise<void>;
 export interface ChildConfig {
   tools: string[];
   parentPid: number;

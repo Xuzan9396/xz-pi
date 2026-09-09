@@ -210,9 +210,12 @@ export class DetailView implements Component {
     const record = this.record;
     const inner = width - 4;
     const body = [
-      `Task: ${record.task}`, `Model: ${record.model}`, `Artifacts: ${record.artifactDir ?? "Not started"}`,
+      `Task: ${record.task}`, `Operation: ${record.operation}`, `Isolation: ${record.isolation ?? "shared cwd"}`,
+      `Model: ${record.model}`, `Artifacts: ${record.artifactDir ?? "Not started"}`,
+      record.worktree ? `Integration: ${record.worktree.integration}\nPatch: ${record.worktree.patchPath}${record.worktree.integration === "conflict" || record.worktree.integration === "preserved" ? `\nPreserved worktree: ${record.worktree.worktreePath}` : ""}` : "",
+      record.taskResult ? `Structured result: ${JSON.stringify(record.taskResult, null, 2)}` : "",
       "", record.transcript || "Waiting for output…", record.error ? `\nError: ${record.error}` : "",
-    ].join("\n");
+    ].filter(Boolean).join("\n");
     const content = cleanText(body).replace(/\t/g, "  ").split("\n").flatMap(line => wrapTextWithAnsi(line || " ", inner));
     this.pageSize = Math.max(1, Math.floor(this.rows() * 0.7) - 4);
     this.maxOffset = Math.max(0, content.length - this.pageSize);

@@ -68,8 +68,8 @@ main 调用示例（不是用户命令）：
 ```javascript
 xz_subagents_run({
   tasks: [
-    { name: "auth-scout", task: "读取 src/auth.ts，分析登录流程，不修改文件。" },
-    { name: "test-review", task: "读取 test/auth.test.ts，检查边界情况覆盖。" }
+    { name: "auth-scout", operation: "inspect", task: "读取 src/auth.ts，分析登录流程，不修改文件。" },
+    { name: "test-review", operation: "review", task: "读取 test/auth.test.ts，检查边界情况覆盖。" }
   ],
   context: "重点关注 token 过期和并发刷新。",
   concurrency: 4,
@@ -79,6 +79,10 @@ xz_subagents_run({
 
 - 每批 1–8 个任务；每个 main 会话一次只接受一批。必须把并行任务放进**同一次调用**。
 - `concurrency`：1–4，默认 4；适用于两种工具模式，不再仅限 read 任务。
+- `operation`：`general/inspect/research/implement/test/review/integrate`，用于约束职责和结构化结果；省略为兼容模式 `general`。
+- 任务级 `context` 会追加到批次公共 `context` 后，只发给该任务。
+- `isolation: "worktree"` 只允许 `mode: "write", operation: "implement"`；main 根据是否存在并行代码修改自行选择，调研、查询和普通测试不使用 worktree。
+- `requireChanges` 仅用于 worktree，默认 `true`；允许实现任务合法无改动时可显式设为 `false`。
 - `exclusive`：每个任务可设置，默认 `false`。设为 `true` 时先等待本批次活动任务结束，再独占执行；后续任务等待它完成，不插队。
 - `timeoutSeconds`：每个任务从启动执行器开始的进程运行时限，默认 600，最大 1800；排队不计入。
 - 所有任务进入完成、失败、取消或超时状态后才返回，结果保持输入顺序。某个任务失败不会丢弃其他任务的结果。
@@ -101,16 +105,36 @@ xz_subagents_run({
 ```javascript
 xz_subagents_run({
   tasks: [
-    { name: "ios-native", mode: "write", task: "搜索 XCUITest/Appium 方案，不修改文件或设备。", tools: ["web_search", "fetch_content"], skills: [] },
-    { name: "ios-light", mode: "write", task: "搜索 Maestro/simctl 方案，不修改文件或设备。", tools: ["web_search", "fetch_content"], skills: [] }
+    { name: "ios-native", mode: "write", operation: "research", task: "搜索 XCUITest/Appium 方案，不修改文件或设备。", tools: ["web_search", "fetch_content"], skills: [] },
+    { name: "ios-light", mode: "write", operation: "research", task: "搜索 Maestro/simctl 方案，不修改文件或设备。", tools: ["web_search", "fetch_content"], skills: [] }
   ],
   concurrency: 2
 })
 ```
 
-修改同一工作区、控制同一浏览器/设备等有冲突的任务，应由 main 显式设置 `exclusive: true`，不能因为有工具白名单就假定并发安全。只读任务需要稳定工作区快照时也可以指定独占。
+控制同一浏览器/设备、执行非隔离写操作等有冲突的任务，应由 main 显式设置 `exclusive: true`。只读任务需要稳定工作区快照时也可以指定独占。独占只覆盖**本批次**，不覆盖其他 Pi 会话或外部进程。
 
-独占只覆盖**本批次**，不覆盖其他 Pi 会话、外部进程或 main 同时调用的工具。main 不应在等待子任务时另行修改这些共享资源。没有自动 worktree、合并、文件回滚或操作撤销；取消时可能留下部分改动。
+### 并行实现与自动 Patch 集成
+
+需要并行写代码时，main 可以显式选择严格 worktree：
+
+```javascript
+xz_subagents_run({
+  tasks: [
+    { name: "api", mode: "write", operation: "implement", isolation: "worktree", task: "只修改 src/api/** 并完成 API。", context: "接口契约：……" },
+    { name: "ui", mode: "write", operation: "implement", isolation: "worktree", task: "只修改 src/ui/** 并完成页面。", context: "接口契约：……" }
+  ],
+  concurrency: 2
+})
+```
+
+- 主 Git checkout 必须干净；否则 worktree 任务启动失败，不会退回共享目录。
+- worktree 位于仓库上级的 `.xz-pi-worktrees/<仓库>-<任务>-<短ID>`。
+- 子任务不能 commit/merge/rebase；执行器捕获相对共同 base commit 的二进制 Patch，包含 tracked、staged、删除和未跟踪文件。
+- main 等全部子进程结束后，执行器按任务输入顺序先 `git apply --check`，再把 Patch 应用到主 checkout。这里的“集成”是应用未暂存 Patch，**不会自动提交 Git commit**。
+- Patch 成功应用或任务合法无改动后，自动删除 worktree 和临时分支；冲突、捕获失败或失败任务存在改动时保留 worktree、Patch 和 `handoff.json` 供检查。
+- 一个 Patch 冲突不会阻止后续独立 Patch 尝试集成。main 最终收到每个任务的 `applied/conflict/preserved/no_changes` 状态。
+- 调研、查询、Review 和普通测试不创建 worktree；它们继续在项目 cwd 并行。非 worktree 写操作仍可能冲突，应使用 `exclusive`。
 
 `read` 模式按工具名限制。若受信任扩展覆盖了同名内置工具，仍执行该扩展实现；它不是文件系统只读沙箱。
 
@@ -133,7 +157,7 @@ xz_subagents_run({
 ```javascript
 xz_subagents_run({
   tasks: [{
-    name: "docs", mode: "write",
+    name: "docs", mode: "write", operation: "research",
     task: "通过已配置的 context7 MCP 查询这个库的 API，返回来源。",
     tools: ["read", "mcp"],
     skills: []
@@ -155,12 +179,14 @@ xz_subagents_run({
 
 默认使用 main 当前模型和 thinking；任务可指定 `model: "provider/modelId"`。新进程从已有 Pi 配置/环境解析认证。
 
-子代理默认是新对话，**不复制 main 聊天历史和运行时系统提示词**。加载标准 Pi 系统提示词、适用的 AGENTS.md / CLAUDE.md、所选 skills，再追加子任务职责。main 提供的背景用 `context` 显式传入。未信任项目不会因委派而自动获得信任；Pi 的上下文文件仍遵循其原有加载规则。
+子代理默认是新对话，**不复制 main 聊天历史和运行时系统提示词**。加载标准 Pi 系统提示词、适用的 AGENTS.md / CLAUDE.md、所选 skills，再追加子任务职责。main 提供的批次背景用顶层 `context` 传入，任务私有背景用 `tasks[].context` 传入。未信任项目不会因委派而自动获得信任；Pi 的上下文文件仍遵循其原有加载规则。
+
+除兼容模式 `general` 外，子代理必须在最终回复附带 `XZ_SUBAGENT_RESULT` JSON，包含状态、摘要、实际命令/退出码、测试证据、发现、假设和阻塞项。原始全文仍写入 `output.md`，结构化结果写入 `result.json` 并返回 main；缺失或非法结构化结果会把任务标记失败，避免仅凭自然语言“已完成”进入下一阶段。
 
 ## 输出、取消与清理
 
 - main 收到的汇总最多 50 KB / 2000 行，单任务按批次数均分正文预算；截断会提示读取文件。
-- 每个任务在系统临时目录生成独立的 `xz-pi-subagent-*` 私有目录：`output.md`、`events.jsonl`、`result.json`、`stderr.log`，以及启动配置和职责提示词。
+- 每个任务在系统临时目录生成独立的 `xz-pi-subagent-*` 私有目录：`output.md`、`events.jsonl`、`result.json`、`stderr.log`，以及启动配置和职责提示词。worktree 任务另有 `changes.patch` 和 `handoff.json`。
 - 子进程使用 `--no-session`：这些产物不是可通过 `/resume` 续聊的原生 Pi 子会话。当前批次 UI 记录在内存中，不跨 Pi 重启恢复；main 的返回摘要和路径随主会话工具结果保存（主会话开启保存时）。
 - 输出文件不存入仓库，也不写进 npm 包。目录和文件限制为当前用户访问。
 - 每个事件流最多 32 MiB，单行 JSON 最多 4 MiB；超限会停止任务并标记失败。stderr 仅保留最后 16 KB。

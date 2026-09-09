@@ -34,6 +34,18 @@ test("skills inherit exactly or select by name; missing skills/read fail closed"
   assert.throws(() => planBatch({ tasks: [{ ...task, skills: ["unknown"] }] }, withSkills), /not loaded/);
 });
 
+test("operation context and worktree isolation are explicit and fail closed", () => {
+  const isolated = planBatch({ context: "shared", tasks: [{
+    name: "writer", task: "implement", mode: "write", operation: "implement", isolation: "worktree", context: "only src/api", skills: [],
+  }] }, resources)[0]!;
+  assert.equal(isolated.task.requireChanges, true);
+  assert.match(isolated.context, /Shared batch context:\nshared/);
+  assert.match(isolated.context, /Task-specific context:\nonly src\/api/);
+  assert.throws(() => planBatch({ tasks: [{ name: "a", task: "research", mode: "write", operation: "research", isolation: "worktree" }] }, resources), /only available/);
+  assert.throws(() => planBatch({ tasks: [{ name: "a", task: "implement", operation: "implement" }] }, resources), /mode: write/);
+  assert.throws(() => planBatch({ tasks: [{ name: "a", task: "inspect", requireChanges: true }] }, resources), /requires worktree/);
+});
+
 test("validation rejects duplicate/unsafe labels and invalid limits", () => {
   const task = { name: "a", task: "inspect" };
   assert.throws(() => planBatch({ tasks: [task, task] }, resources), /unique/);
