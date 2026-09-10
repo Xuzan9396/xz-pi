@@ -1,5 +1,11 @@
 # xz-pi-subagents
 
+## 0.1.5
+
+### Patch Changes
+
+- 122a08a: timeout
+
 ## 0.1.4
 
 ### Patch Changes
