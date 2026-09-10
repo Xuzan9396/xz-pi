@@ -1,5 +1,11 @@
 # xz-pi-subagents
 
+## 0.1.6
+
+### Patch Changes
+
+- dd87b42: c
+
 ## 0.1.5
 
 ### Patch Changes
