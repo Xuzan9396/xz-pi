@@ -91,7 +91,7 @@ pi install npm:xz-pi-vim@0.1.0
 
 ### xz-pi-subagents
 
-main 通过一个 `xz_subagents_run` 工具分派 2–8 个独立子任务，并等待全部结果；只有一个任务时由 main 直接执行。输入框下方自动显示任务进度；空输入框按 `↓` 打开/重开、`Enter` 查看实时详情、两次 `x` 取消选中的子任务，列表中 `Esc` 隐藏面板但不删除日志。任务默认并行，只有 `exclusive: true` 才独占执行。复用 Pi skills 和 MCP 扩展配置，不创建隔离工作区，也不提供后台守护、记忆或复杂编排。
+main 通过一个 `xz_subagents_run` 工具分派 2–8 个独立子任务，并等待全部结果；只有一个任务时由 main 直接执行。子任务没有自动超时。输入框下方自动显示任务进度；空输入框按 `↓` 或执行 `/agent_show` 打开/重开、`Enter` 查看实时详情、两次 `x` 只取消选中的子任务。TUI 中失败任务会暂停，详情按 `c` 可启动全新 Agent 继续。任务默认并行，只有 `exclusive: true` 才独占执行。复用 Pi skills 和 MCP 扩展配置，不创建隔离工作区，也不提供后台守护、记忆或复杂编排。
 
 本包要求 Node.js 22+、Pi 0.84.4+。详细说明见 [`xz-pi-subagents/README.md`](./xz-pi-subagents/README.md)。
 

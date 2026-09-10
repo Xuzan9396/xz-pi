@@ -19,6 +19,13 @@ export default function xzSubagents(pi: ExtensionAPI): void {
     skills = (event.systemPromptOptions.skills ?? []).map(skill => ({ name: skill.name, filePath: skill.filePath }));
   });
   pi.on("session_start", (_event, ctx) => { fleet.attach(ctx); });
+  pi.registerCommand("agent_show", {
+    description: "重新展示当前或最近一批子 Agent 任务面板",
+    handler: async (_args, ctx) => {
+      fleet.attach(ctx);
+      if (!fleet.show()) ctx.ui.notify("当前 Session 没有子 Agent 任务", "info");
+    },
+  });
   pi.on("session_shutdown", async () => {
     fleet.dispose();
     await manager.dispose();
@@ -28,7 +35,7 @@ export default function xzSubagents(pi: ExtensionAPI): void {
   pi.registerTool({
     name: TOOL_NAME,
     label: "Multi agents",
-    description: "Delegate 1–8 named tasks to independent Pi processes and WAIT for ALL results. Main resumes only after every task settles. Use operation to define the task contract. Default read mode permits only main's active filesystem read/grep/find/ls tools. Write mode permits main's tools. Both modes run concurrently by default; exclusive is scheduling only. tools narrows, never expands main's active tools. Children share the current project directory, not conversation history; supply concise shared/task context explicitly. This tool does not create isolated workspaces or integrate file changes. No background daemon or recursive delegation.",
+    description: "Delegate 1–8 named tasks to independent Pi processes and WAIT for ALL results, with no automatic task deadline. In TUI mode a failed child pauses so the user can open its detail and press c to retry with a fresh agent, or cancel it. Main resumes only after every task settles. Use operation to define the task contract. Default read mode permits only main's active filesystem read/grep/find/ls tools. Write mode permits main's tools. Both modes run concurrently by default; exclusive is scheduling only. tools narrows, never expands main's active tools. Children share the current project directory, not conversation history; supply concise shared/task context explicitly. This tool does not create isolated workspaces or integrate file changes. No background daemon or recursive delegation.",
     promptSnippet: "Delegate independent tasks in parallel and wait for all results",
     promptGuidelines: [
       "Use xz_subagents_run when the user requests multi-agent work or delegation; keep small ordinary tasks in main.",
@@ -36,6 +43,7 @@ export default function xzSubagents(pi: ExtensionAPI): void {
       "Tool access is not scheduling: independent web research can use mode: write with operation: research and narrow tools. Set exclusive: true for shared devices, browsers, or workspace mutations that must not overlap.",
       "All xz_subagents_run children share the current project directory. Assign disjoint files to concurrent implementation tasks or make conflicting mutations exclusive; this tool does not provide workspace isolation or patch integration.",
       "For precise delivery, give each task explicit paths, constraints and acceptance evidence. Use separate wait barriers: parallel inspect/research, then implementation, then fresh review/tests.",
+      "xz_subagents_run has no automatic timeout. In TUI mode, tell the user to inspect a paused task and press c for a fresh-agent retry or cancel that task.",
       "Skills inherit only when the resolved child tools include read. If a narrow tool list omits read, implicit skills are disabled automatically; explicit non-empty skills still require read.",
     ],
     parameters: Type.Object({
@@ -52,7 +60,6 @@ export default function xzSubagents(pi: ExtensionAPI): void {
       }), { minItems: 1, maxItems: MAX_TASKS }),
       context: Type.Optional(Type.String({ maxLength: 64_000, description: "Relevant background to share with all tasks, not the full main history" })),
       concurrency: Type.Optional(Type.Integer({ minimum: 1, maximum: 4, description: "Concurrent tasks in either mode, default 4; explicit exclusive tasks run alone" })),
-      timeoutSeconds: Type.Optional(Type.Integer({ minimum: 1, maximum: 1800, description: "Deadline per started task, default 600 seconds; queue time excluded" })),
     }),
     async execute(_id, params, signal, _onUpdate, ctx) {
       const currentManager = manager;
@@ -65,23 +72,23 @@ export default function xzSubagents(pi: ExtensionAPI): void {
         thinking: pi.getThinkingLevel(), tools: active, skills, extensions,
       });
       const runner = createRunner({ invocation: piInvocation(getPackageDir()) });
-      const records = await currentManager.run(plans, params.concurrency ?? 4, runner, signal);
+      const records = await currentManager.run(plans, params.concurrency ?? 4, runner, signal, ctx.mode === "tui");
       // Keep details bounded too: Pi persists tool details and may serialize them to RPC.
       const boundedOutput = (text: string): string => {
         const result = truncateHead(cleanText(text), { maxBytes: Math.floor(36_000 / records.length), maxLines: Math.floor(1400 / records.length) });
         return result.content + (result.truncated ? "\n[Output truncated; read output.md for the full result.]" : "");
       };
       const results = records.map(record => ({
-        id: record.id, name: record.name, status: record.status, model: record.model, tokens: record.tokens,
+        id: record.id, name: record.name, status: record.status, model: record.model, tokens: record.tokens, attempt: record.attempt,
         durationMs: record.startedAt ? (record.endedAt ?? Date.now()) - record.startedAt : 0,
-        artifactDir: record.artifactDir, taskResult: record.taskResult,
+        artifactDir: record.artifactDir, attemptDir: record.attemptDir, taskResult: record.taskResult,
         error: record.error ? truncateHead(cleanText(record.error), { maxBytes: 1024, maxLines: 20 }).content : undefined,
         output: boundedOutput(record.output),
       }));
       const summary = results.map(result => [
         `## ${result.name}: ${result.status}`, result.error ?? "", result.output,
         result.taskResult ? `Structured result: ${JSON.stringify(result.taskResult)}` : "",
-        result.artifactDir ? `Full result: ${result.artifactDir}/output.md\nEvents: ${result.artifactDir}/events.jsonl` : "",
+        result.attemptDir ? `Latest attempt: ${result.attemptDir}/output.md\nEvents: ${result.attemptDir}/events.jsonl` : "",
       ].filter(Boolean).join("\n")).join("\n\n");
       return {
         content: [{ type: "text", text: truncateHead(summary, { maxBytes: 50_000, maxLines: 2000 }).content }],

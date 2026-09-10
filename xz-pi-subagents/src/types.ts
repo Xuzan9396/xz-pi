@@ -26,7 +26,6 @@ export interface BatchInput {
   tasks: TaskInput[];
   context?: string;
   concurrency?: number;
-  timeoutSeconds?: number;
 }
 export interface SkillRef { name: string; filePath: string }
 export interface Resources {
@@ -45,10 +44,9 @@ export interface LaunchPlan {
   context: string;
   tools: string[];
   skillPaths: string[];
-  timeoutMs: number;
 }
-export type TaskStatus = "queued" | "running" | "stopping" | "completed" | "failed" | "cancelled" | "timed_out";
-export const isTerminal = (status: TaskStatus): boolean => !["queued", "running", "stopping"].includes(status);
+export type TaskStatus = "queued" | "running" | "paused" | "resuming" | "stopping" | "completed" | "failed" | "cancelled";
+export const isTerminal = (status: TaskStatus): boolean => ["completed", "failed", "cancelled"].includes(status);
 export interface StructuredTaskResult {
   status: "completed" | "blocked" | "failed";
   summary: string;
@@ -68,18 +66,21 @@ export interface TaskRecord {
   exclusive: boolean;
   model: string;
   status: TaskStatus;
+  attempt: number;
   startedAt?: number;
   endedAt?: number;
   activity: string;
   transcript: string;
   output: string;
   error?: string;
+  lastError?: string;
   artifactDir?: string;
+  attemptDir?: string;
   taskResult?: StructuredTaskResult;
   tokens: number;
 }
 export interface RunOutcome {
-  status: "completed" | "failed" | "cancelled" | "timed_out";
+  status: "completed" | "failed" | "cancelled";
   output: string;
   error?: string;
   taskResult?: StructuredTaskResult;

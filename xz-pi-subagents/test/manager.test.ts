@@ -89,6 +89,30 @@ test("abort-before-start, parent abort, dispose and competing tool calls are bou
   await assert.rejects(manager.run([plan()], 1, never), /shut down/);
 });
 
+test("interactive failures pause and continue with a fresh runner attempt", async () => {
+  const manager = new TaskManager(); let calls = 0;
+  const batch = manager.run([plan("retry")], 1, async () => {
+    calls++;
+    return calls === 1 ? { status: "failed", output: "partial", error: "provider failed" } : success("recovered");
+  }, undefined, true);
+  await tick(); await tick();
+  const record = manager.records[0]!;
+  assert.equal(record.status, "paused"); assert.equal(record.attempt, 1); assert.equal(manager.busy, true);
+  assert.equal(manager.continueTask(record.id), true);
+  assert.equal(manager.continueTask(record.id), false);
+  const records = await batch;
+  assert.equal(records[0]?.status, "completed"); assert.equal(records[0]?.attempt, 2); assert.equal(records[0]?.output, "recovered");
+});
+
+test("cancelling a paused task settles the waiting batch", async () => {
+  const manager = new TaskManager();
+  const batch = manager.run([plan("paused")], 1, async () => ({ status: "failed", output: "", error: "bad" }), undefined, true);
+  await tick(); await tick();
+  assert.equal(manager.records[0]?.status, "paused");
+  manager.cancel(manager.records[0]!.id);
+  assert.equal((await batch)[0]?.status, "cancelled");
+});
+
 test("a throwing runner or UI listener cannot strand the batch", async () => {
   const manager = new TaskManager(); manager.subscribe(() => { throw new Error("UI failed"); });
   const records = await manager.run([plan("a"), plan("b")], 2, async () => { throw new Error("spawn failed"); });

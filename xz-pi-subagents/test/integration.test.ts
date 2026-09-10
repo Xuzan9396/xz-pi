@@ -55,10 +55,10 @@ test("real Pi child loads selected skills, project context and explicit extensio
   await writeFile(extension, `import { Type } from "typebox";\nexport default function(pi) { pi.registerTool({ name: "fixture_echo", label: "Echo", description: "Local fixture echo", parameters: Type.Object({ value: Type.String() }), execute: async (_id, args) => ({ content: [{type: "text", text: "EXTENSION_MARKER " + args.value}] }) }); }`);
   const p = plan("integration", "write");
   p.resources = { ...p.resources, ...env, extensions: [extension], trusted: true };
-  p.tools = ["read", "fixture_echo"]; p.skillPaths = [skillPath]; p.timeoutMs = 20_000;
+  p.tools = ["read", "fixture_echo"]; p.skillPaths = [skillPath];
   const r = record();
   const outcome = await createRunner({ invocation: piInvocation(piDir), tempRoot: env.root })(p, r, new AbortController().signal, () => {});
-  assert.equal(outcome.status, "completed", `${outcome.error}\n${await readFile(join(r.artifactDir!, "stderr.log"), "utf8")}`);
+  assert.equal(outcome.status, "completed", `${outcome.error}\n${await readFile(join(r.attemptDir!, "stderr.log"), "utf8")}`);
   assert.equal(outcome.output, "SKILL_AND_EXTENSION_OK");
   assert.ok(requests.length >= 2);
   assert.match(JSON.stringify(requests[0].messages), /fixture-skill/);
@@ -128,7 +128,7 @@ test("delegation does not grant trust to project extensions", { timeout: 20_000 
   const extensionDir = join(env.cwd, ".pi", "extensions"); await mkdir(extensionDir, { recursive: true });
   const marker = join(env.root, "untrusted-executed");
   await writeFile(join(extensionDir, "unsafe.ts"), `import {writeFileSync} from "node:fs"; export default function() {writeFileSync(${JSON.stringify(marker)}, "bad");}`);
-  const p = plan("trust"); p.resources = { ...p.resources, ...env, trusted: false }; p.timeoutMs = 10_000;
+  const p = plan("trust"); p.resources = { ...p.resources, ...env, trusted: false };
   const outcome = await createRunner({ invocation: piInvocation(piDir), tempRoot: env.root })(p, record(), new AbortController().signal, () => {});
   assert.equal(outcome.status, "completed", outcome.error); assert.equal(existsSync(marker), false);
 });
@@ -148,10 +148,10 @@ for (const approved of [true, false]) {
     const config = { mcpServers: { fixture: { command: process.execPath, args: [server, marker] } }, settings: { approveTools: !approved } };
     await writeFile(extension, `import { createMcpAdapter } from ${JSON.stringify(process.env.XZ_TEST_MCP_ADAPTER)}; export default createMcpAdapter({config:${JSON.stringify(config)}});`);
     const p = plan("mcp-check", "write"); p.resources = { ...p.resources, ...env, extensions: [extension] };
-    p.tools = ["mcp"]; p.timeoutMs = 20_000;
+    p.tools = ["mcp"];
     const r = record();
     const outcome = await createRunner({ invocation: piInvocation(piDir), tempRoot: env.root })(p, r, new AbortController().signal, () => {});
-    assert.equal(outcome.status, "completed", `${outcome.error}\n${await readFile(join(r.artifactDir!, "stderr.log"), "utf8")}`);
+    assert.equal(outcome.status, "completed", `${outcome.error}\n${await readFile(join(r.attemptDir!, "stderr.log"), "utf8")}`);
     assert.equal(existsSync(marker), approved, responses.join("\n"));
     assert.match(responses.join("\n"), approved ? /MCP_ECHO local-ping/ : /approval_required|approval/i);
   });

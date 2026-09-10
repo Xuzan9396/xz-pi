@@ -8,8 +8,6 @@ export function planBatch(input: BatchInput, resources: Resources): LaunchPlan[]
   if (input.context !== undefined && (typeof input.context !== "string" || input.context.length > 64_000)) throw new Error("Invalid shared context");
   const concurrency = input.concurrency ?? MAX_CONCURRENCY;
   if (!Number.isInteger(concurrency) || concurrency < 1 || concurrency > MAX_CONCURRENCY) throw new Error("concurrency must be 1–4");
-  const seconds = input.timeoutSeconds ?? 600;
-  if (!Number.isInteger(seconds) || seconds < 1 || seconds > 1800) throw new Error("timeoutSeconds must be 1–1800");
   if (!resources.model) throw new Error("No parent model selected.");
   const available = new Set(resources.tools.filter(name => !DELEGATION_TOOLS.has(name)));
   const names = new Set<string>();
@@ -43,7 +41,7 @@ export function planBatch(input: BatchInput, resources: Resources): LaunchPlan[]
     if (context.length > 96_000) throw new Error(`Combined context is too large: ${task.name}`);
     return {
       task: { ...task, mode, operation, exclusive: task.exclusive ?? false }, resources, context, tools,
-      skillPaths: [...new Set(skills.map(s => s.filePath))], timeoutMs: seconds * 1000,
+      skillPaths: [...new Set(skills.map(s => s.filePath))],
     };
   });
 }

@@ -53,7 +53,6 @@ test("validation rejects duplicate/unsafe labels and invalid limits", () => {
   assert.throws(() => planBatch({ tasks: [{ ...task, name: "../bad" }] }, resources), /unique/);
   assert.throws(() => planBatch({ tasks: [] }, resources));
   assert.throws(() => planBatch({ tasks: [task], concurrency: 0 }, resources));
-  assert.throws(() => planBatch({ tasks: [task], timeoutSeconds: Infinity }, resources));
 });
 
 test("CLI arguments preserve trust, exact tool/skill lists and explicit extension paths", () => {

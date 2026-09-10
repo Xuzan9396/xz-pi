@@ -38,28 +38,43 @@ for (const [mode, status] of [["ok", "completed"], ["provider-error", "failed"],
     const run = createRunner({ invocation: { command: process.execPath, args: [fake] }, tempRoot: root, killGraceMs: 50 });
     const result = await run(p, r, new AbortController().signal, () => {});
     assert.equal(result.status, status, result.error);
-    assert.equal(await readFile(join(r.artifactDir!, "output.md"), "utf8"), result.output);
-    if (process.platform !== "win32") assert.equal((await stat(join(r.artifactDir!, "events.jsonl"))).mode & 0o777, 0o600);
+    assert.equal(await readFile(join(r.attemptDir!, "output.md"), "utf8"), result.output);
+    if (process.platform !== "win32") assert.equal((await stat(join(r.attemptDir!, "events.jsonl"))).mode & 0o777, 0o600);
     if (mode === "ok") { assert.equal(result.output, "中文🙂\u2028result"); assert.equal(r.tokens, 9); }
   });
 }
 
-for (const cancel of [true, false]) {
-  test(cancel ? "cancel kills a TERM-ignoring process tree" : "timeout is distinct from cancellation", { timeout: 10_000 }, async t => {
-    const root = await mkdtemp(join(tmpdir(), "xz-runner-test-")); t.after(() => rm(root, { recursive: true, force: true }));
-    const r = record(); const p = plan("hang"); p.timeoutMs = cancel ? 5000 : 250;
-    const controller = new AbortController();
-    const run = createRunner({ invocation: { command: process.execPath, args: [fake] }, tempRoot: root, killGraceMs: 100 });
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const result = await run(p, r, controller.signal, () => {
-      if (cancel && !timer && r.activity === "Thinking") timer = setTimeout(() => controller.abort(), 100);
-    });
-    clearTimeout(timer);
-    assert.equal(result.status, cancel ? "cancelled" : "timed_out", result.error);
-    const pid = Number(await readFile(join(r.artifactDir!, "pid"), "utf8"));
-    assert.throws(() => process.kill(pid, 0), /ESRCH/);
-  });
-}
+test("fresh retries keep separate attempt artifacts and receive the previous error", { timeout: 10_000 }, async t => {
+  const root = await mkdtemp(join(tmpdir(), "xz-runner-test-")); t.after(() => rm(root, { recursive: true, force: true }));
+  const r = record(); const p = plan("provider-error");
+  const run = createRunner({ invocation: { command: process.execPath, args: [fake] }, tempRoot: root, killGraceMs: 50 });
+  const first = await run(p, r, new AbortController().signal, () => {});
+  assert.equal(first.status, "failed");
+  r.lastError = first.error; r.attempt = 2; p.task.task = "ok";
+  const second = await run(p, r, new AbortController().signal, () => {});
+  assert.equal(second.status, "completed");
+  assert.equal(JSON.parse(await readFile(join(r.artifactDir!, "attempt-1", "result.json"), "utf8")).status, "failed");
+  assert.equal(JSON.parse(await readFile(join(r.artifactDir!, "attempt-2", "result.json"), "utf8")).status, "completed");
+  assert.match(r.transcript, /Fresh attempt 2/);
+});
+
+test("a task has no automatic deadline and cancellation still kills its process tree", { timeout: 10_000 }, async t => {
+  const root = await mkdtemp(join(tmpdir(), "xz-runner-test-")); t.after(() => rm(root, { recursive: true, force: true }));
+  const r = record(); const p = plan("hang");
+  const controller = new AbortController();
+  const run = createRunner({ invocation: { command: process.execPath, args: [fake] }, tempRoot: root, killGraceMs: 100 });
+  let started = false;
+  let settled = false;
+  const pending = run(p, r, controller.signal, () => { if (r.activity === "Thinking") started = true; }).then(result => { settled = true; return result; });
+  while (!started) await new Promise(resolve => setTimeout(resolve, 10));
+  await new Promise(resolve => setTimeout(resolve, 350));
+  assert.equal(settled, false, "runner imposed an unexpected deadline");
+  controller.abort();
+  const result = await pending;
+  assert.equal(result.status, "cancelled", result.error);
+  const pid = Number(await readFile(join(r.attemptDir!, "pid"), "utf8"));
+  assert.throws(() => process.kill(pid, 0), /ESRCH/);
+});
 
 test("missing executable fails promptly", { timeout: 5000 }, async t => {
   const root = await mkdtemp(join(tmpdir(), "xz-runner-test-")); t.after(() => rm(root, { recursive: true, force: true }));

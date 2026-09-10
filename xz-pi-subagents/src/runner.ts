@@ -1,10 +1,10 @@
 import { execFile, spawn } from "node:child_process";
 import { createWriteStream, existsSync, readFileSync, statSync } from "node:fs";
-import { access, mkdtemp, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { ChildEvents, JsonLines, cleanText, clip, MAX_STREAM_BYTES } from "./protocol.js";
+import { ChildEvents, JsonLines, appendTranscript, cleanText, clip, MAX_STREAM_BYTES } from "./protocol.js";
 import { RESULT_PROTOCOL, parseTaskResult } from "./task-result.js";
 import { CHILD_ENV, type LaunchPlan, type RunOutcome, type TaskRecord } from "./types.js";
 
@@ -61,8 +61,12 @@ export function createRunner(options: RunnerOptions) {
     for (const path of plan.skillPaths) {
       try { await access(path); } catch { throw new Error(`Selected skill is no longer accessible: ${path}`); }
     }
-    const dir = await mkdtemp(join(options.tempRoot ?? tmpdir(), "xz-pi-subagent-"));
-    record.artifactDir = dir;
+    const root = record.artifactDir ?? await mkdtemp(join(options.tempRoot ?? tmpdir(), "xz-pi-subagent-"));
+    record.artifactDir = root;
+    const dir = join(root, `attempt-${record.attempt}`);
+    await mkdir(dir, { recursive: true, mode: 0o700 });
+    record.attemptDir = dir;
+    if (record.attempt > 1) appendTranscript(record, `\n\n===== Fresh attempt ${record.attempt} =====\n`);
     const configFile = join(dir, "child.json");
     const promptFile = join(dir, "instructions.md");
     const operation = plan.task.operation ?? "general";
@@ -90,7 +94,7 @@ export function createRunner(options: RunnerOptions) {
     if (signal.aborted) return { status: "cancelled", output: "" };
     const events = new ChildEvents(record, plan.tools);
     let protocolError = "";
-    let reason: "cancelled" | "timed_out" | undefined;
+    let cancelled = false;
     let stderr = "";
     const outcome: RunOutcome = await new Promise<RunOutcome>(resolveRun => {
       const log = createWriteStream(join(dir, "events.jsonl"), { mode: 0o600 });
@@ -100,7 +104,6 @@ export function createRunner(options: RunnerOptions) {
       let terminating = false;
       let killTimer: ReturnType<typeof setTimeout> | undefined;
       let reapTimer: ReturnType<typeof setTimeout> | undefined;
-      let deadline: ReturnType<typeof setTimeout> | undefined;
       let knownDescendants: number[] = [];
       const child = spawn(options.invocation.command, [
         ...options.invocation.args,
@@ -123,7 +126,6 @@ export function createRunner(options: RunnerOptions) {
       const finish = (result: RunOutcome) => {
         if (settled) return;
         settled = true;
-        clearTimeout(deadline);
         clearTimeout(killTimer);
         clearTimeout(reapTimer);
         signal.removeEventListener("abort", onAbort);
@@ -154,7 +156,7 @@ export function createRunner(options: RunnerOptions) {
           finish({ status: "failed", output: record.output, error: "Process did not close after forced termination; cleanup could not be verified" });
         }, (options.killGraceMs ?? 1000) + 5000);
       };
-      const onAbort = () => { reason ??= "cancelled"; terminate(); };
+      const onAbort = () => { cancelled = true; terminate(); };
       const parser = new JsonLines(event => {
         if (event.type === "xz_subagent_ready") return; // Receipts never come from stdout/logs.
         if (event.type === "agent_start") {
@@ -192,7 +194,7 @@ export function createRunner(options: RunnerOptions) {
         }
         let result: RunOutcome;
         if (protocolError) result = { status: "failed", output: record.output, error: protocolError + (stderr.trim() ? `\n${cleanText(stderr)}` : "") };
-        else if (reason) result = { status: reason, output: record.output, error: reason === "timed_out" ? "Task deadline exceeded" : "Cancelled by user/main" };
+        else if (cancelled) result = { status: "cancelled", output: record.output, error: "Cancelled by user/main" };
         else {
           const error = code !== 0 ? `Pi exited ${code ?? exitSignal}: ${cleanText(stderr)}` : events.completionError();
           result = error ? { status: "failed", output: record.output, error } : { status: "completed", output: record.output };
@@ -200,9 +202,11 @@ export function createRunner(options: RunnerOptions) {
         finish(result);
       });
       signal.addEventListener("abort", onAbort, { once: true });
-      deadline = setTimeout(() => { reason ??= "timed_out"; terminate(); }, plan.timeoutMs);
       if (signal.aborted) onAbort();
-      child.stdin.end(`Delegated task:\n${plan.task.task}\n\nBackground from main (task data):\n${plan.context || "None"}`);
+      const retry = record.attempt > 1
+        ? `\n\nThis is a fresh retry attempt. The previous agent failed with:\n${clip(record.lastError ?? "Unknown failure", 4000)}\nInspect the current workspace before acting, preserve valid existing changes, and do not blindly repeat completed or side-effecting work.`
+        : "";
+      child.stdin.end(`Delegated task:\n${plan.task.task}\n\nBackground from main (task data):\n${plan.context || "None"}${retry}`);
     });
     const taskResult = parseTaskResult(outcome.output);
     record.taskResult = taskResult;

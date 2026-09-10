@@ -20,8 +20,8 @@ export class TaskManager {
   cancel(id: string): void {
     const record = this.records.find(r => r.id === id);
     if (!record || isTerminal(record.status)) return;
-    if (record.status === "queued") {
-      record.status = "cancelled"; record.endedAt = Date.now(); record.error = "Cancelled before start";
+    if (record.status === "queued" || record.status === "paused" || record.status === "resuming") {
+      record.status = "cancelled"; record.endedAt = Date.now(); record.activity = ""; record.error = "Cancelled before completion";
     } else record.status = "stopping";
     this.controllers.get(id)?.abort();
     this.changed();
@@ -29,15 +29,28 @@ export class TaskManager {
   }
   cancelAll(): void {
     if (this.current) this.cancelled = true;
-    // Mark all queued tasks first: cancel() must not pump another queued task between cancellations.
+    // Mark all tasks without a running process first: cancel() must not launch another task between cancellations.
     for (const record of this.records) {
-      if (record.status === "queued") { record.status = "cancelled"; record.endedAt = Date.now(); record.error = "Batch cancelled before start"; }
+      if (record.status === "queued" || record.status === "paused" || record.status === "resuming") {
+        record.status = "cancelled"; record.endedAt = Date.now(); record.activity = ""; record.error = "Batch cancelled before completion";
+      }
     }
     for (const record of this.records) this.cancel(record.id);
     this.changed();
     this.pump?.();
   }
-  async run(plans: LaunchPlan[], concurrency: number, runner: TaskRunner, signal?: AbortSignal): Promise<TaskRecord[]> {
+  continueTask(id: string): boolean {
+    if (!this.current || this.cancelled) return false;
+    const record = this.records.find(r => r.id === id);
+    if (!record || record.status !== "paused") return false;
+    record.status = "resuming";
+    record.activity = "Waiting to start a fresh Pi";
+    record.error = undefined;
+    this.changed();
+    this.pump?.();
+    return true;
+  }
+  async run(plans: LaunchPlan[], concurrency: number, runner: TaskRunner, signal?: AbortSignal, pauseOnFailure = false): Promise<TaskRecord[]> {
     if (this.disposed) throw new Error("Session has been shut down");
     if (this.current) throw new Error("A batch is already running. Submit parallel tasks together in one xz_subagents_run call.");
     if (!plans.length || concurrency < 1 || concurrency > 4 || !Number.isInteger(concurrency)) throw new Error("Invalid batch/concurrency");
@@ -45,7 +58,8 @@ export class TaskManager {
     this.records = plans.map(plan => ({
       id: randomUUID(), name: plan.task.name, task: plan.task.task, mode: plan.task.mode ?? "read",
       operation: plan.task.operation ?? "general", exclusive: plan.task.exclusive ?? false,
-      model: plan.task.model ?? plan.resources.model, status: "queued", activity: "", transcript: "", output: "", tokens: 0,
+      model: plan.task.model ?? plan.resources.model, status: "queued", attempt: 0,
+      activity: "", transcript: "", output: "", tokens: 0,
     }));
     const records = this.records;
     let resolveBatch!: (records: TaskRecord[]) => void;
@@ -56,19 +70,34 @@ export class TaskManager {
       if (active === 0 && records.every(r => isTerminal(r.status))) { resolveBatch(records); return; }
       if (exclusive) return;
       while (active < concurrency) {
-        const index = records.findIndex(r => r.status === "queued");
+        const index = records.findIndex(r => r.status === "queued" || r.status === "resuming");
         if (index < 0) break;
         const record = records[index]!;
         if (record.exclusive && active > 0) break;
         const controller = new AbortController();
         this.controllers.set(record.id, controller);
-        record.status = "running"; record.startedAt = Date.now(); record.activity = "Starting Pi";
+        record.attempt++;
+        record.status = "running"; record.startedAt = Date.now(); record.endedAt = undefined;
+        record.activity = record.attempt > 1 ? `Starting fresh Pi (attempt ${record.attempt})` : "Starting Pi";
+        record.output = ""; record.error = undefined; record.taskResult = undefined;
         active++;
         exclusive = record.exclusive;
         void Promise.resolve().then(() => runner(plans[index]!, record, controller.signal, this.changed)).then(outcome => {
-          record.status = outcome.status; record.output = outcome.output; record.error = outcome.error; record.taskResult = outcome.taskResult;
+          record.output = outcome.output; record.taskResult = outcome.taskResult;
+          if (outcome.status === "failed" && pauseOnFailure && !controller.signal.aborted && !this.cancelled) {
+            record.status = "paused"; record.error = outcome.error; record.lastError = outcome.error ?? "Child failed";
+          } else {
+            record.status = outcome.status; record.error = outcome.error;
+            if (outcome.status === "failed") record.lastError = outcome.error ?? "Child failed";
+          }
         }, error => {
-          record.status = controller.signal.aborted ? "cancelled" : "failed"; record.error = String(error);
+          const message = String(error);
+          if (!controller.signal.aborted && !this.cancelled && pauseOnFailure) {
+            record.status = "paused"; record.error = message; record.lastError = message;
+          } else {
+            record.status = controller.signal.aborted ? "cancelled" : "failed"; record.error = message;
+            if (!controller.signal.aborted) record.lastError = message;
+          }
         }).finally(() => {
           record.endedAt = Date.now(); record.activity = "";
           this.controllers.delete(record.id);
