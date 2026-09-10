@@ -1,5 +1,11 @@
 # xz-pi-subagents
 
+## 0.1.4
+
+### Patch Changes
+
+- 08bbe01: worktree
+
 ## 0.1.3
 
 ### Patch Changes
