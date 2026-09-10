@@ -58,7 +58,7 @@ test("real Pi child loads selected skills, project context and explicit extensio
   p.tools = ["read", "fixture_echo"]; p.skillPaths = [skillPath];
   const r = record();
   const outcome = await createRunner({ invocation: piInvocation(piDir), tempRoot: env.root })(p, r, new AbortController().signal, () => {});
-  assert.equal(outcome.status, "completed", `${outcome.error}\n${await readFile(join(r.attemptDir!, "stderr.log"), "utf8")}`);
+  assert.equal(outcome.status, "completed", `${outcome.error}\n${await readFile(join(r.artifactDir!, "stderr.log"), "utf8")}`);
   assert.equal(outcome.output, "SKILL_AND_EXTENSION_OK");
   assert.ok(requests.length >= 2);
   assert.match(JSON.stringify(requests[0].messages), /fixture-skill/);
@@ -151,7 +151,7 @@ for (const approved of [true, false]) {
     p.tools = ["mcp"];
     const r = record();
     const outcome = await createRunner({ invocation: piInvocation(piDir), tempRoot: env.root })(p, r, new AbortController().signal, () => {});
-    assert.equal(outcome.status, "completed", `${outcome.error}\n${await readFile(join(r.attemptDir!, "stderr.log"), "utf8")}`);
+    assert.equal(outcome.status, "completed", `${outcome.error}\n${await readFile(join(r.artifactDir!, "stderr.log"), "utf8")}`);
     assert.equal(existsSync(marker), approved, responses.join("\n"));
     assert.match(responses.join("\n"), approved ? /MCP_ECHO local-ping/ : /approval_required|approval/i);
   });

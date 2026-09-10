@@ -7,7 +7,7 @@ export function plan(name = "one", mode: "read" | "write" = "read"): LaunchPlan 
   return { task: { name, task: name, mode, operation: "general" }, resources, context: "", tools: ["read"], skillPaths: [] };
 }
 export function record(name = "one"): TaskRecord {
-  return { id: name, name, task: name, mode: "read", operation: "general", exclusive: false, model: "fixture/model", status: "running", attempt: 1, activity: "", transcript: "", output: "", tokens: 0 };
+  return { id: name, name, task: name, mode: "read", operation: "general", exclusive: false, model: "fixture/model", status: "running", activity: "", transcript: "", output: "", tokens: 0 };
 }
 export const tick = () => new Promise<void>(resolve => setImmediate(resolve));
 export function deferred<T>() {

@@ -154,12 +154,12 @@ test("batch cancellation does not dismiss an open detail or conceal cleanup fail
 
 test("detail cancel confirmation, scrolling and terminal text sanitization", () => {
   const r = record(); r.transcript = "\x1b[2Jbad\x07\n" + "row\n".repeat(100);
-  let cancels = 0, closes = 0, continues = 0;
-  const detail = new DetailView(r, theme, () => 30, () => {}, () => { closes++; }, () => { cancels++; }, () => { continues++; return true; });
+  let cancels = 0, closes = 0;
+  const detail = new DetailView(r, theme, () => 30, () => {}, () => { closes++; }, () => { cancels++; });
   assert.ok(detail.render(40).length <= 24);
   detail.handleInput("x"); detail.handleInput("\x1b[A"); detail.handleInput("x"); assert.equal(cancels, 0);
   detail.handleInput("x"); assert.equal(cancels, 1);
-  r.status = "paused"; detail.handleInput("c"); assert.equal(continues, 1);
-  assert.match(detail.render(60).join("\n"), /c 启动全新 Agent 继续/);
+  r.status = "failed";
+  assert.doesNotMatch(detail.render(60).join("\n"), /c .*继续/);
   detail.handleInput("\x1b"); assert.equal(closes, 1);
 });

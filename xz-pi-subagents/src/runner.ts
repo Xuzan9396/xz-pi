@@ -1,10 +1,10 @@
 import { execFile, spawn } from "node:child_process";
 import { createWriteStream, existsSync, readFileSync, statSync } from "node:fs";
-import { access, mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { access, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { ChildEvents, JsonLines, appendTranscript, cleanText, clip, MAX_STREAM_BYTES } from "./protocol.js";
+import { ChildEvents, JsonLines, cleanText, clip, MAX_STREAM_BYTES } from "./protocol.js";
 import { RESULT_PROTOCOL, parseTaskResult } from "./task-result.js";
 import { CHILD_ENV, type LaunchPlan, type RunOutcome, type TaskRecord } from "./types.js";
 
@@ -61,12 +61,8 @@ export function createRunner(options: RunnerOptions) {
     for (const path of plan.skillPaths) {
       try { await access(path); } catch { throw new Error(`Selected skill is no longer accessible: ${path}`); }
     }
-    const root = record.artifactDir ?? await mkdtemp(join(options.tempRoot ?? tmpdir(), "xz-pi-subagent-"));
-    record.artifactDir = root;
-    const dir = join(root, `attempt-${record.attempt}`);
-    await mkdir(dir, { recursive: true, mode: 0o700 });
-    record.attemptDir = dir;
-    if (record.attempt > 1) appendTranscript(record, `\n\n===== Fresh attempt ${record.attempt} =====\n`);
+    const dir = record.artifactDir ?? await mkdtemp(join(options.tempRoot ?? tmpdir(), "xz-pi-subagent-"));
+    record.artifactDir = dir;
     const configFile = join(dir, "child.json");
     const promptFile = join(dir, "instructions.md");
     const operation = plan.task.operation ?? "general";
@@ -203,10 +199,7 @@ export function createRunner(options: RunnerOptions) {
       });
       signal.addEventListener("abort", onAbort, { once: true });
       if (signal.aborted) onAbort();
-      const retry = record.attempt > 1
-        ? `\n\nThis is a fresh retry attempt. The previous agent failed with:\n${clip(record.lastError ?? "Unknown failure", 4000)}\nInspect the current workspace before acting, preserve valid existing changes, and do not blindly repeat completed or side-effecting work.`
-        : "";
-      child.stdin.end(`Delegated task:\n${plan.task.task}\n\nBackground from main (task data):\n${plan.context || "None"}${retry}`);
+      child.stdin.end(`Delegated task:\n${plan.task.task}\n\nBackground from main (task data):\n${plan.context || "None"}`);
     });
     const taskResult = parseTaskResult(outcome.output);
     record.taskResult = taskResult;

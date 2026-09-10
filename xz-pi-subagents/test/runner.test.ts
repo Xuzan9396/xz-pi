@@ -19,7 +19,7 @@ test("LF decoder handles split UTF8, literal unicode line separators, noise and 
   assert.equal(cleanText("\x1b[2Jhello\x00\x1b]0;bad\x07"), "hello");
 });
 
-test("final error cannot reuse prior text and retries can produce a later successful result", () => {
+test("final errors cannot reuse prior text and a later child response can recover", () => {
   const r = record(); const events = new ChildEvents(r, ["read"]);
   events.accept({ type: "xz_subagent_ready", tools: ["read"] }); events.accept({ type: "agent_start" });
   events.accept({ type: "message_end", message: { role: "assistant", content: "earlier", stopReason: "toolUse" } });
@@ -38,25 +38,11 @@ for (const [mode, status] of [["ok", "completed"], ["provider-error", "failed"],
     const run = createRunner({ invocation: { command: process.execPath, args: [fake] }, tempRoot: root, killGraceMs: 50 });
     const result = await run(p, r, new AbortController().signal, () => {});
     assert.equal(result.status, status, result.error);
-    assert.equal(await readFile(join(r.attemptDir!, "output.md"), "utf8"), result.output);
-    if (process.platform !== "win32") assert.equal((await stat(join(r.attemptDir!, "events.jsonl"))).mode & 0o777, 0o600);
+    assert.equal(await readFile(join(r.artifactDir!, "output.md"), "utf8"), result.output);
+    if (process.platform !== "win32") assert.equal((await stat(join(r.artifactDir!, "events.jsonl"))).mode & 0o777, 0o600);
     if (mode === "ok") { assert.equal(result.output, "中文🙂\u2028result"); assert.equal(r.tokens, 9); }
   });
 }
-
-test("fresh retries keep separate attempt artifacts and receive the previous error", { timeout: 10_000 }, async t => {
-  const root = await mkdtemp(join(tmpdir(), "xz-runner-test-")); t.after(() => rm(root, { recursive: true, force: true }));
-  const r = record(); const p = plan("provider-error");
-  const run = createRunner({ invocation: { command: process.execPath, args: [fake] }, tempRoot: root, killGraceMs: 50 });
-  const first = await run(p, r, new AbortController().signal, () => {});
-  assert.equal(first.status, "failed");
-  r.lastError = first.error; r.attempt = 2; p.task.task = "ok";
-  const second = await run(p, r, new AbortController().signal, () => {});
-  assert.equal(second.status, "completed");
-  assert.equal(JSON.parse(await readFile(join(r.artifactDir!, "attempt-1", "result.json"), "utf8")).status, "failed");
-  assert.equal(JSON.parse(await readFile(join(r.artifactDir!, "attempt-2", "result.json"), "utf8")).status, "completed");
-  assert.match(r.transcript, /Fresh attempt 2/);
-});
 
 test("a task has no automatic deadline and cancellation still kills its process tree", { timeout: 10_000 }, async t => {
   const root = await mkdtemp(join(tmpdir(), "xz-runner-test-")); t.after(() => rm(root, { recursive: true, force: true }));
@@ -72,7 +58,7 @@ test("a task has no automatic deadline and cancellation still kills its process 
   controller.abort();
   const result = await pending;
   assert.equal(result.status, "cancelled", result.error);
-  const pid = Number(await readFile(join(r.attemptDir!, "pid"), "utf8"));
+  const pid = Number(await readFile(join(r.artifactDir!, "pid"), "utf8"));
   assert.throws(() => process.kill(pid, 0), /ESRCH/);
 });
 

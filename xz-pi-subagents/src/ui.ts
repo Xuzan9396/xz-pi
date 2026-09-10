@@ -5,7 +5,7 @@ import { cleanText } from "./protocol.js";
 import { isTerminal, type TaskRecord } from "./types.js";
 
 export const STATUS_LABELS = {
-  queued: "排队", running: "运行中", paused: "已暂停", resuming: "等待继续", stopping: "正在停止",
+  queued: "排队", running: "运行中", stopping: "正在停止",
   completed: "已完成", failed: "失败", cancelled: "已取消",
 };
 const KEY = "xz-subagents";
@@ -153,7 +153,7 @@ export class FleetView {
     for (const record of records.slice(start, start + maxRows)) {
       const selected = this.active && record.id === this.selected;
       const state = STATUS_LABELS[record.status];
-      const icon = record.status === "completed" ? "✓" : isTerminal(record.status) ? "!" : record.status === "queued" || record.status === "resuming" ? "○" : record.status === "paused" ? "‖" : "●";
+      const icon = record.status === "completed" ? "✓" : isTerminal(record.status) ? "!" : record.status === "queued" ? "○" : "●";
       const armed = selected && this.armed?.id === record.id && Date.now() - this.armed.at < 3000;
       const row = `${selected ? ">" : " "} ${icon} ${record.name}  ${state} · ${elapsed(record)} · ${record.tokens} tokens  ${armed ? "再按 x 确认取消" : oneLine(record.activity || record.task)}`;
       lines.push(theme.fg(selected ? "accent" : "muted", row));
@@ -170,7 +170,7 @@ export class FleetView {
       this.closeDetail = () => done();
       return new DetailView(
         record, theme, () => tui.terminal.rows, () => tui.requestRender(), () => done(),
-        () => this.manager.cancel(record.id), () => this.manager.continueTask(record.id),
+        () => this.manager.cancel(record.id),
       );
     }, { overlay: true, overlayOptions: { width: "100%", maxHeight: "80%", anchor: "center" } }).catch(error => {
       if (this.ctx === ctx) ctx.ui.notify(`Cannot open task details: ${String(error)}`, "error");
@@ -197,15 +197,11 @@ export class DetailView implements Component {
   constructor(
     private record: TaskRecord, private theme: Theme, private rows: () => number,
     private redraw: () => void, private close: () => void, private cancel: () => void,
-    private continueTask: () => boolean,
   ) {}
   invalidate(): void {}
   handleInput(data: string): void {
     if (isKeyRelease(data)) return;
     if (matchesKey(data, "escape")) { this.close(); return; }
-    if (matchesKey(data, "c") && this.record.status === "paused") {
-      this.armedAt = 0; this.continueTask(); this.redraw(); return;
-    }
     if (matchesKey(data, "x") && !isTerminal(this.record.status)) {
       if (this.armedAt && Date.now() - this.armedAt < 3000) { this.cancel(); this.armedAt = 0; }
       else this.armedAt = Date.now();
@@ -225,8 +221,8 @@ export class DetailView implements Component {
     const record = this.record;
     const inner = width - 4;
     const body = [
-      `Task: ${record.task}`, `Operation: ${record.operation}`, `Attempt: ${record.attempt}`,
-      `Model: ${record.model}`, `Artifacts: ${record.attemptDir ?? record.artifactDir ?? "Not started"}`,
+      `Task: ${record.task}`, `Operation: ${record.operation}`,
+      `Model: ${record.model}`, `Artifacts: ${record.artifactDir ?? "Not started"}`,
       record.taskResult ? `Structured result: ${JSON.stringify(record.taskResult, null, 2)}` : "",
       "", record.transcript || "Waiting for output…", record.error ? `\nError: ${record.error}` : "",
     ].filter(Boolean).join("\n");
@@ -234,12 +230,10 @@ export class DetailView implements Component {
     this.pageSize = Math.max(1, Math.floor(this.rows() * 0.7) - 4);
     this.maxOffset = Math.max(0, content.length - this.pageSize);
     this.offset = this.follow ? this.maxOffset : Math.min(this.offset, this.maxOffset);
-    const header = this.theme.fg("accent", `${record.name} · ${STATUS_LABELS[record.status]} · attempt ${record.attempt} · ${elapsed(record)} · ${record.tokens} tokens`);
-    const stop = record.status === "paused"
-      ? "c 启动全新 Agent 继续 · x 两次取消当前任务"
-      : !isTerminal(record.status)
-        ? (this.armedAt && Date.now() - this.armedAt < 3000 ? "再按 x 确认取消当前任务" : "x 两次取消当前任务")
-        : "任务已结束";
+    const header = this.theme.fg("accent", `${record.name} · ${STATUS_LABELS[record.status]} · ${elapsed(record)} · ${record.tokens} tokens`);
+    const stop = !isTerminal(record.status)
+      ? (this.armedAt && Date.now() - this.armedAt < 3000 ? "再按 x 确认取消当前任务" : "x 两次取消当前任务")
+      : "任务已结束";
     const box = (text: string): string => {
       const line = truncateToWidth(text, inner);
       return `│ ${line}${" ".repeat(Math.max(0, inner - visibleWidth(line)))} │`;

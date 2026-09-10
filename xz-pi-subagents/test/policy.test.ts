@@ -4,8 +4,10 @@ import { planBatch } from "../src/policy.js";
 import { childArgs } from "../src/runner.js";
 import { resources } from "./helpers.js";
 
-test("default read tasks and explicit write tools respect the parent capability ceiling", () => {
-  assert.deepEqual(planBatch({ tasks: [{ name: "a", task: "inspect" }] }, resources)[0]?.tools, ["read", "grep", "find", "ls"]);
+test("default read tasks include bash/search while respecting the parent capability ceiling", () => {
+  assert.deepEqual(planBatch({ tasks: [{ name: "a", task: "inspect" }] }, resources)[0]?.tools, ["read", "grep", "find", "ls", "bash"]);
+  assert.deepEqual(planBatch({ tasks: [{ name: "a", task: "inspect" }] }, { ...resources, tools: ["read", "bash", "write"] })[0]?.tools, ["read", "bash"]);
+  assert.doesNotThrow(() => planBatch({ tasks: [{ name: "a", task: "inspect", tools: ["read", "bash"] }] }, resources));
   const write = planBatch({ tasks: [{ name: "a", task: "inspect", mode: "write" }] }, resources)[0]!;
   assert.ok(write.tools.includes("mcp")); assert.ok(!write.tools.includes("xz_subagents_run"));
   assert.throws(() => planBatch({ tasks: [{ name: "a", task: "inspect", tools: ["mcp"] }] }, resources), /write/);

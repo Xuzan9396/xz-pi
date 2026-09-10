@@ -2,7 +2,8 @@ export const TOOL_NAME = "xz_subagents_run";
 export const CHILD_ENV = "XZ_PI_SUBAGENT_CONFIG";
 export const MAX_TASKS = 8;
 export const MAX_CONCURRENCY = 4;
-export const READ_TOOLS = new Set(["read", "grep", "find", "ls"]);
+// Read mode is a behavioral contract, not a sandbox: bash enables repository discovery but can mutate state.
+export const READ_TOOLS = new Set(["read", "bash", "grep", "find", "ls"]);
 // Control-plane guard, not a sandbox: a shell or third-party tool can still spawn processes.
 export const DELEGATION_TOOLS = new Set([
   TOOL_NAME, "subagent", "get_subagent_result", "steer_subagent",
@@ -45,7 +46,7 @@ export interface LaunchPlan {
   tools: string[];
   skillPaths: string[];
 }
-export type TaskStatus = "queued" | "running" | "paused" | "resuming" | "stopping" | "completed" | "failed" | "cancelled";
+export type TaskStatus = "queued" | "running" | "stopping" | "completed" | "failed" | "cancelled";
 export const isTerminal = (status: TaskStatus): boolean => ["completed", "failed", "cancelled"].includes(status);
 export interface StructuredTaskResult {
   status: "completed" | "blocked" | "failed";
@@ -66,16 +67,13 @@ export interface TaskRecord {
   exclusive: boolean;
   model: string;
   status: TaskStatus;
-  attempt: number;
   startedAt?: number;
   endedAt?: number;
   activity: string;
   transcript: string;
   output: string;
   error?: string;
-  lastError?: string;
   artifactDir?: string;
-  attemptDir?: string;
   taskResult?: StructuredTaskResult;
   tokens: number;
 }

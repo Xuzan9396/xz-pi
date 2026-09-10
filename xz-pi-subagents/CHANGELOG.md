@@ -32,8 +32,9 @@
 
 ## Unreleased
 
-- Remove automatic child-task deadlines; tasks now run until completion, failure handling, cancellation, or session shutdown.
-- In TUI mode, pause failed tasks and allow `c` in task detail to retry with a fresh Agent using the same task configuration and current workspace.
+- Remove automatic child-task deadlines; tasks now run until completion, failure, cancellation, or session shutdown.
+- Treat child failures as terminal results so they never pause or block a batch, and remove the fresh-Agent `c` retry flow.
+- Let read-mode children inherit active `bash` and search tools alongside `read`, with an explicit no-modification behavioral contract.
 - Add `/agent_show` to restore a hidden task panel and clarify that double `x` cancels only the selected child.
 - Automatically disable implicit skill inheritance when a child's resolved tool list does not include `read`; explicitly selected skills still require `read`.
 - Remove Git Worktree creation, patch capture, and integration so this package only coordinates child agents.
