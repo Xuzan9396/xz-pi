@@ -8,6 +8,7 @@
     "xz-pi-build-ios-apps",
     "xz-pi-playwright-cli",
     "xz-pi-subagents",
+    "xz-pi-worktree",
     "xz-pi-websearch",
     "xz-pi-vim"
   ],

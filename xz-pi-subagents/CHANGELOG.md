@@ -20,9 +20,10 @@
 
 ## Unreleased
 
+- Automatically disable implicit skill inheritance when a child's resolved tool list does not include `read`; explicitly selected skills still require `read`.
+- Remove Git Worktree creation, patch capture, and integration so this package only coordinates child agents.
 - Reject batches with fewer than two tasks so single tasks stay in the main agent.
 - Add explicit task operations, task-specific context, and validated structured result handoffs.
-- Add model-selected strict sibling worktrees for implementation tasks, serial automatic patch application, successful cleanup, and failure preservation.
 
 ## 0.1.0
 

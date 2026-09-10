@@ -20,21 +20,17 @@ export function planBatch(input: BatchInput, resources: Resources): LaunchPlan[]
     if (task.mode && task.mode !== "read" && task.mode !== "write") throw new Error(`Invalid mode: ${task.mode}`);
     if (task.operation !== undefined && !OPERATIONS.has(task.operation)) throw new Error(`Invalid operation: ${task.operation}`);
     if (task.context !== undefined && (typeof task.context !== "string" || task.context.length > 64_000)) throw new Error(`Invalid task context: ${task.name}`);
-    if (task.isolation !== undefined && task.isolation !== "worktree") throw new Error(`Invalid isolation: ${task.isolation}`);
-    if (task.requireChanges !== undefined && typeof task.requireChanges !== "boolean") throw new Error("requireChanges must be a boolean");
     if (task.exclusive !== undefined && typeof task.exclusive !== "boolean") throw new Error("exclusive must be a boolean");
     const mode = task.mode ?? "read";
     const operation = task.operation ?? "general";
     if (operation === "implement" && mode !== "write") throw new Error("implement tasks require mode: write");
-    if (task.isolation === "worktree" && (mode !== "write" || operation !== "implement")) throw new Error("worktree isolation is only available for mode: write, operation: implement tasks");
-    if (task.requireChanges !== undefined && task.isolation !== "worktree") throw new Error("requireChanges requires worktree isolation");
     const tools = [...new Set(task.tools ?? [...available].filter(name => mode === "write" || READ_TOOLS.has(name)))];
     for (const name of tools) {
       if (!available.has(name)) throw new Error(`Tool ${name} is not active in main or is a delegation tool.`);
       if (mode === "read" && !READ_TOOLS.has(name)) throw new Error(`${name} needs mode: write for tool access, including MCP/extension tools. Scheduling is controlled separately by exclusive.`);
     }
     if (task.model && (!task.model.includes("/") || task.model.startsWith("-") || /\s/.test(task.model))) throw new Error("model must be an exact provider/modelId reference");
-    const skills = task.skills === undefined ? resources.skills : task.skills.map(name => {
+    const skills = task.skills === undefined ? (tools.includes("read") ? resources.skills : []) : task.skills.map(name => {
       const skill = resources.skills.find(s => s.name === name);
       if (!skill) throw new Error(`Skill ${name} is not loaded in main.`);
       return skill;
@@ -46,7 +42,7 @@ export function planBatch(input: BatchInput, resources: Resources): LaunchPlan[]
     const context = [commonContext ? `Shared batch context:\n${commonContext}` : "", taskContext ? `Task-specific context:\n${taskContext}` : ""].filter(Boolean).join("\n\n");
     if (context.length > 96_000) throw new Error(`Combined context is too large: ${task.name}`);
     return {
-      task: { ...task, mode, operation, requireChanges: task.requireChanges ?? task.isolation === "worktree", exclusive: task.exclusive ?? false }, resources, context, tools,
+      task: { ...task, mode, operation, exclusive: task.exclusive ?? false }, resources, context, tools,
       skillPaths: [...new Set(skills.map(s => s.filePath))], timeoutMs: seconds * 1000,
     };
   });

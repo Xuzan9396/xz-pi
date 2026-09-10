@@ -6,7 +6,6 @@ import { TaskManager } from "./src/manager.js";
 import { planBatch } from "./src/policy.js";
 import { cleanText } from "./src/protocol.js";
 import { createRunner, piInvocation } from "./src/runner.js";
-import { integrateTaskWorktrees } from "./src/worktree.js";
 import { CHILD_ENV, DELEGATION_TOOLS, MAX_TASKS, TOOL_NAME, type BatchInput, type SkillRef, type TaskRecord } from "./src/types.js";
 import { FleetView } from "./src/ui.js";
 
@@ -29,13 +28,15 @@ export default function xzSubagents(pi: ExtensionAPI): void {
   pi.registerTool({
     name: TOOL_NAME,
     label: "Multi agents",
-    description: "Delegate 1–8 named tasks to independent Pi processes and WAIT for ALL results. Main resumes only after every task and any automatic worktree integration settles. Use operation to define the task contract. For concurrent code implementation, the model may select mode:'write', operation:'implement', isolation:'worktree'; strict sibling worktrees are patched back to main serially and removed only after successful application. Never use worktrees for research, inspection, or ordinary tests. Worktree setup requires a clean Git checkout and never falls back to shared cwd. Default read mode permits only main's active filesystem read/grep/find/ls tools. Write mode permits main's tools. Both modes run concurrently by default; exclusive is scheduling only. tools narrows, never expands main's active tools. Children share project files, not conversation history; supply concise shared/task context explicitly. No background daemon or recursive delegation.",
+    description: "Delegate 1–8 named tasks to independent Pi processes and WAIT for ALL results. Main resumes only after every task settles. Use operation to define the task contract. Default read mode permits only main's active filesystem read/grep/find/ls tools. Write mode permits main's tools. Both modes run concurrently by default; exclusive is scheduling only. tools narrows, never expands main's active tools. Children share the current project directory, not conversation history; supply concise shared/task context explicitly. This tool does not create isolated workspaces or integrate file changes. No background daemon or recursive delegation.",
     promptSnippet: "Delegate independent tasks in parallel and wait for all results",
     promptGuidelines: [
       "Use xz_subagents_run when the user requests multi-agent work or delegation; keep small ordinary tasks in main.",
       "Put independent tasks in ONE xz_subagents_run call. Use separate rounds for dependencies. Give each child a self-contained task and report cancelled/failed tasks honestly.",
-      "Tool access is not scheduling: independent web research can use mode: write with operation: research, narrow tools, and no worktree. Use worktree only for concurrent implementation that changes code. Set exclusive: true for a shared device/browser or non-isolated mutation.",
-      "For precise delivery, give each task explicit paths, constraints and acceptance evidence. Use separate wait barriers: parallel inspect/research, then implementation, then fresh review/tests. Set requireChanges:false only when an isolated implementation may legitimately be a no-op.",
+      "Tool access is not scheduling: independent web research can use mode: write with operation: research and narrow tools. Set exclusive: true for shared devices, browsers, or workspace mutations that must not overlap.",
+      "All xz_subagents_run children share the current project directory. Assign disjoint files to concurrent implementation tasks or make conflicting mutations exclusive; this tool does not provide workspace isolation or patch integration.",
+      "For precise delivery, give each task explicit paths, constraints and acceptance evidence. Use separate wait barriers: parallel inspect/research, then implementation, then fresh review/tests.",
+      "Skills inherit only when the resolved child tools include read. If a narrow tool list omits read, implicit skills are disabled automatically; explicit non-empty skills still require read.",
     ],
     parameters: Type.Object({
       tasks: Type.Array(Type.Object({
@@ -44,12 +45,10 @@ export default function xzSubagents(pi: ExtensionAPI): void {
         mode: Type.Optional(Type.String({ enum: ["read", "write"], description: "Tool access only. Default read: filesystem readers. write: permits shell/MCP/extensions. Neither implies exclusive execution." })),
         operation: Type.Optional(Type.String({ enum: ["general", "inspect", "research", "implement", "test", "review", "integrate"], description: "Behavior/result contract. Use implement only for code changes; default general preserves compatibility." })),
         context: Type.Optional(Type.String({ maxLength: 64_000, description: "Background specific to this task, appended after shared batch context" })),
-        isolation: Type.Optional(Type.String({ enum: ["worktree"], description: "Strict sibling Git worktree for concurrent implementation only. Patch is applied to main serially; setup/integration failure preserves the worktree." })),
-        requireChanges: Type.Optional(Type.Boolean({ description: "Worktree implementation must produce a patch; defaults true when isolation is worktree" })),
-        exclusive: Type.Optional(Type.Boolean({ description: "Default false (parallel). True waits for all active children, then runs alone within this batch; use for conflicting non-isolated writes/shared devices." })),
+        exclusive: Type.Optional(Type.Boolean({ description: "Default false (parallel). True waits for all active children, then runs alone within this batch; use for conflicting workspace writes/shared devices." })),
         model: Type.Optional(Type.String({ description: "Exact provider/modelId; defaults to main's current model" })),
         tools: Type.Optional(Type.Array(Type.String(), { maxItems: 128 })),
-        skills: Type.Optional(Type.Array(Type.String(), { maxItems: 128, description: "Names from main's loaded skills; omit to inherit, [] to disable" })),
+        skills: Type.Optional(Type.Array(Type.String(), { maxItems: 128, description: "Names from main's loaded skills; omit to inherit when read is available (otherwise auto-disabled), [] to disable" })),
       }), { minItems: 1, maxItems: MAX_TASKS }),
       context: Type.Optional(Type.String({ maxLength: 64_000, description: "Relevant background to share with all tasks, not the full main history" })),
       concurrency: Type.Optional(Type.Integer({ minimum: 1, maximum: 4, description: "Concurrent tasks in either mode, default 4; explicit exclusive tasks run alone" })),
@@ -66,7 +65,7 @@ export default function xzSubagents(pi: ExtensionAPI): void {
         thinking: pi.getThinkingLevel(), tools: active, skills, extensions,
       });
       const runner = createRunner({ invocation: piInvocation(getPackageDir()) });
-      const records = await currentManager.run(plans, params.concurrency ?? 4, runner, signal, integrateTaskWorktrees);
+      const records = await currentManager.run(plans, params.concurrency ?? 4, runner, signal);
       // Keep details bounded too: Pi persists tool details and may serialize them to RPC.
       const boundedOutput = (text: string): string => {
         const result = truncateHead(cleanText(text), { maxBytes: Math.floor(36_000 / records.length), maxLines: Math.floor(1400 / records.length) });
@@ -75,14 +74,13 @@ export default function xzSubagents(pi: ExtensionAPI): void {
       const results = records.map(record => ({
         id: record.id, name: record.name, status: record.status, model: record.model, tokens: record.tokens,
         durationMs: record.startedAt ? (record.endedAt ?? Date.now()) - record.startedAt : 0,
-        artifactDir: record.artifactDir, taskResult: record.taskResult, worktree: record.worktree,
+        artifactDir: record.artifactDir, taskResult: record.taskResult,
         error: record.error ? truncateHead(cleanText(record.error), { maxBytes: 1024, maxLines: 20 }).content : undefined,
         output: boundedOutput(record.output),
       }));
       const summary = results.map(result => [
         `## ${result.name}: ${result.status}`, result.error ?? "", result.output,
         result.taskResult ? `Structured result: ${JSON.stringify(result.taskResult)}` : "",
-        result.worktree ? `Worktree integration: ${result.worktree.integration}\nPatch: ${result.worktree.patchPath}\nHandoff: ${result.worktree.handoffPath}${result.worktree.integration === "conflict" || result.worktree.integration === "preserved" ? `\nPreserved worktree: ${result.worktree.worktreePath}` : ""}` : "",
         result.artifactDir ? `Full result: ${result.artifactDir}/output.md\nEvents: ${result.artifactDir}/events.jsonl` : "",
       ].filter(Boolean).join("\n")).join("\n\n");
       return {

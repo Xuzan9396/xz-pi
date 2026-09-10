@@ -10,7 +10,6 @@ export const DELEGATION_TOOLS = new Set([
 ]);
 
 export type TaskOperation = "general" | "inspect" | "research" | "implement" | "test" | "review" | "integrate";
-export type TaskIsolation = "worktree";
 
 export interface TaskInput {
   name: string;
@@ -18,8 +17,6 @@ export interface TaskInput {
   mode?: "read" | "write";
   operation?: TaskOperation;
   context?: string;
-  isolation?: TaskIsolation;
-  requireChanges?: boolean;
   exclusive?: boolean;
   model?: string;
   tools?: string[];
@@ -62,26 +59,12 @@ export interface StructuredTaskResult {
   assumptions: string[];
   blockers: string[];
 }
-export interface WorktreeHandoff {
-  repoRoot: string;
-  worktreePath: string;
-  executionCwd: string;
-  branch: string;
-  baseCommit: string;
-  patchPath: string;
-  handoffPath: string;
-  changedFiles: string[];
-  integration: "pending" | "applied" | "no_changes" | "conflict" | "preserved";
-  cleanupError?: string;
-}
 export interface TaskRecord {
   id: string;
   name: string;
   task: string;
   mode: "read" | "write";
   operation: TaskOperation;
-  isolation?: TaskIsolation;
-  requireChanges: boolean;
   exclusive: boolean;
   model: string;
   status: TaskStatus;
@@ -93,7 +76,6 @@ export interface TaskRecord {
   error?: string;
   artifactDir?: string;
   taskResult?: StructuredTaskResult;
-  worktree?: WorktreeHandoff;
   tokens: number;
 }
 export interface RunOutcome {
@@ -103,7 +85,6 @@ export interface RunOutcome {
   taskResult?: StructuredTaskResult;
 }
 export type TaskRunner = (plan: LaunchPlan, record: TaskRecord, signal: AbortSignal, changed: () => void) => Promise<RunOutcome>;
-export type BatchFinalizer = (plans: LaunchPlan[], records: TaskRecord[], changed: () => void) => Promise<void>;
 export interface ChildConfig {
   tools: string[];
   parentPid: number;

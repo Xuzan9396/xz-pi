@@ -30,6 +30,7 @@ npm --version
 | [`xz-pi-build-ios-apps`](./xz-pi-build-ios-apps) | 提供 9 个 iOS、SwiftUI、Xcode 调试与性能分析技能 | [![npm](https://img.shields.io/npm/v/xz-pi-build-ios-apps)](https://www.npmjs.com/package/xz-pi-build-ios-apps) |
 | [`xz-pi-playwright-cli`](./xz-pi-playwright-cli) | 提供 Microsoft Playwright CLI 技能，用于浏览器自动化与测试 | [![npm](https://img.shields.io/npm/v/xz-pi-playwright-cli)](https://www.npmjs.com/package/xz-pi-playwright-cli) |
 | [`xz-pi-subagents`](./xz-pi-subagents) | main 批量委派并等待，输入框下方查看、进入和取消子任务 | 本地包，见安装说明 |
+| [`xz-pi-worktree`](./xz-pi-worktree) | 独立管理 Git Worktree、Patch 捕获、应用与清理 | 本地包，见安装说明 |
 | [`xz-pi-websearch`](./xz-pi-websearch) | 提供精简的 `web_search` 和 `fetch_content` 工具 | [![npm](https://img.shields.io/npm/v/xz-pi-websearch)](https://www.npmjs.com/package/xz-pi-websearch) |
 | [`xz-pi-vim`](./xz-pi-vim) | 为 Pi 终端输入区提供 Vim 风格模态编辑 | [![npm](https://img.shields.io/npm/v/xz-pi-vim)](https://www.npmjs.com/package/xz-pi-vim) |
 
@@ -49,6 +50,9 @@ pi install npm:xz-pi-vim
 
 # 多 agent 协作（从本仓库根目录安装）
 pi install ./xz-pi-subagents
+
+# 独立 Git Worktree 管理
+pi install ./xz-pi-worktree
 
 # 搜索和网页内容提取
 pi install npm:xz-pi-websearch
@@ -87,9 +91,19 @@ pi install npm:xz-pi-vim@0.1.0
 
 ### xz-pi-subagents
 
-main 通过一个 `xz_subagents_run` 工具分派 2–8 个独立子任务，并等待全部结果；只有一个任务时由 main 直接执行。输入框下方自动显示任务进度；空输入框按 `↓` 打开/重开、`Enter` 查看实时详情、两次 `x` 取消选中的子任务，列表中 `Esc` 隐藏面板但不删除日志。任务默认并行，只有 `exclusive: true` 才独占执行。复用 Pi skills 和 MCP 扩展配置，不提供后台守护、记忆或复杂编排。
+main 通过一个 `xz_subagents_run` 工具分派 2–8 个独立子任务，并等待全部结果；只有一个任务时由 main 直接执行。输入框下方自动显示任务进度；空输入框按 `↓` 打开/重开、`Enter` 查看实时详情、两次 `x` 取消选中的子任务，列表中 `Esc` 隐藏面板但不删除日志。任务默认并行，只有 `exclusive: true` 才独占执行。复用 Pi skills 和 MCP 扩展配置，不创建隔离工作区，也不提供后台守护、记忆或复杂编排。
 
 本包要求 Node.js 22+、Pi 0.84.4+。详细说明见 [`xz-pi-subagents/README.md`](./xz-pi-subagents/README.md)。
+
+### xz-pi-worktree
+
+注册独立的 `xz_worktree` 工具，负责创建、检查、捕获、应用和清理 Git Worktree。它不启动 Agent，不依赖 `xz-pi-subagents`，状态和 Patch 独立持久化。
+
+```bash
+pi install ./xz-pi-worktree
+```
+
+详细说明见 [`xz-pi-worktree/README.md`](./xz-pi-worktree/README.md)。
 
 ### xz-pi-btw
 

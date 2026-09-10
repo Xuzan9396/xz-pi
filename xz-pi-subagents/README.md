@@ -81,8 +81,6 @@ xz_subagents_run({
 - `concurrency`：1–4，默认 4；适用于两种工具模式，不再仅限 read 任务。
 - `operation`：`general/inspect/research/implement/test/review/integrate`，用于约束职责和结构化结果；省略为兼容模式 `general`。
 - 任务级 `context` 会追加到批次公共 `context` 后，只发给该任务。
-- `isolation: "worktree"` 只允许 `mode: "write", operation: "implement"`；main 根据是否存在并行代码修改自行选择，调研、查询和普通测试不使用 worktree。
-- `requireChanges` 仅用于 worktree，默认 `true`；允许实现任务合法无改动时可显式设为 `false`。
 - `exclusive`：每个任务可设置，默认 `false`。设为 `true` 时先等待本批次活动任务结束，再独占执行；后续任务等待它完成，不插队。
 - `timeoutSeconds`：每个任务从启动执行器开始的进程运行时限，默认 600，最大 1800；排队不计入。
 - 所有任务进入完成、失败、取消或超时状态后才返回，结果保持输入顺序。某个任务失败不会丢弃其他任务的结果。
@@ -105,36 +103,16 @@ xz_subagents_run({
 ```javascript
 xz_subagents_run({
   tasks: [
-    { name: "ios-native", mode: "write", operation: "research", task: "搜索 XCUITest/Appium 方案，不修改文件或设备。", tools: ["web_search", "fetch_content"], skills: [] },
-    { name: "ios-light", mode: "write", operation: "research", task: "搜索 Maestro/simctl 方案，不修改文件或设备。", tools: ["web_search", "fetch_content"], skills: [] }
+    { name: "ios-native", mode: "write", operation: "research", task: "搜索 XCUITest/Appium 方案，不修改文件或设备。", tools: ["web_search", "fetch_content"] },
+    { name: "ios-light", mode: "write", operation: "research", task: "搜索 Maestro/simctl 方案，不修改文件或设备。", tools: ["web_search", "fetch_content"] }
   ],
   concurrency: 2
 })
 ```
 
-控制同一浏览器/设备、执行非隔离写操作等有冲突的任务，应由 main 显式设置 `exclusive: true`。只读任务需要稳定工作区快照时也可以指定独占。独占只覆盖**本批次**，不覆盖其他 Pi 会话或外部进程。
+控制同一浏览器/设备、修改相同文件等有冲突的任务，应由 main 显式设置 `exclusive: true`。只读任务需要稳定工作区快照时也可以指定独占。独占只覆盖**本批次**，不覆盖其他 Pi 会话或外部进程。
 
-### 并行实现与自动 Patch 集成
-
-需要并行写代码时，main 可以显式选择严格 worktree：
-
-```javascript
-xz_subagents_run({
-  tasks: [
-    { name: "api", mode: "write", operation: "implement", isolation: "worktree", task: "只修改 src/api/** 并完成 API。", context: "接口契约：……" },
-    { name: "ui", mode: "write", operation: "implement", isolation: "worktree", task: "只修改 src/ui/** 并完成页面。", context: "接口契约：……" }
-  ],
-  concurrency: 2
-})
-```
-
-- 主 Git checkout 必须干净；否则 worktree 任务启动失败，不会退回共享目录。
-- worktree 位于仓库上级的 `.xz-pi-worktrees/<仓库>-<任务>-<短ID>`。
-- 子任务不能 commit/merge/rebase；执行器捕获相对共同 base commit 的二进制 Patch，包含 tracked、staged、删除和未跟踪文件。
-- main 等全部子进程结束后，执行器按任务输入顺序先 `git apply --check`，再把 Patch 应用到主 checkout。这里的“集成”是应用未暂存 Patch，**不会自动提交 Git commit**。
-- Patch 成功应用或任务合法无改动后，自动删除 worktree 和临时分支；冲突、捕获失败或失败任务存在改动时保留 worktree、Patch 和 `handoff.json` 供检查。
-- 一个 Patch 冲突不会阻止后续独立 Patch 尝试集成。main 最终收到每个任务的 `applied/conflict/preserved/no_changes` 状态。
-- 调研、查询、Review 和普通测试不创建 worktree；它们继续在项目 cwd 并行。非 worktree 写操作仍可能冲突，应使用 `exclusive`。
+所有子 Agent 始终共享 main 当前项目目录。并行实现应分配互不重叠的文件；本包不创建隔离工作区、不管理 Git Worktree，也不捕获或集成 Patch。Git Worktree 是独立的 `xz-pi-worktree` 包职责。
 
 `read` 模式按工具名限制。若受信任扩展覆盖了同名内置工具，仍执行该扩展实现；它不是文件系统只读沙箱。
 
@@ -142,10 +120,11 @@ xz_subagents_run({
 
 ### Skills
 
-- 默认转发 main 当前加载的 skill 文件目录信息，子 agent 按需读取。
-- `skills: ["code-review"]` 只选择指定 skill，`skills: []` 关闭。
+- 未指定 `skills` 且子 agent 的最终工具包含 `read` 时，默认转发 main 当前加载的 skill 文件目录信息，子 agent 按需读取。
+- 最终工具不包含 `read` 时，未显式指定的 skills 自动关闭，适合仅使用网页搜索或 MCP 的工具型任务。
+- `skills: ["code-review"]` 只选择指定 skill，`skills: []` 显式关闭。
 - 找不到指定 skill 或无法加载其文件时报错。
-- 使用 skills 必须保留 `read` 工具。
+- 显式选择非空 skills 必须保留 `read` 工具。
 - 不把全部 skill 正文复制进每个子代理的上下文。
 
 ### MCP 与扩展
@@ -186,7 +165,7 @@ xz_subagents_run({
 ## 输出、取消与清理
 
 - main 收到的汇总最多 50 KB / 2000 行，单任务按批次数均分正文预算；截断会提示读取文件。
-- 每个任务在系统临时目录生成独立的 `xz-pi-subagent-*` 私有目录：`output.md`、`events.jsonl`、`result.json`、`stderr.log`，以及启动配置和职责提示词。worktree 任务另有 `changes.patch` 和 `handoff.json`。
+- 每个任务在系统临时目录生成独立的 `xz-pi-subagent-*` 私有目录：`output.md`、`events.jsonl`、`result.json`、`stderr.log`，以及启动配置和职责提示词。
 - 子进程使用 `--no-session`：这些产物不是可通过 `/resume` 续聊的原生 Pi 子会话。当前批次 UI 记录在内存中，不跨 Pi 重启恢复；main 的返回摘要和路径随主会话工具结果保存（主会话开启保存时）。
 - 输出文件不存入仓库，也不写进 npm 包。目录和文件限制为当前用户访问。
 - 每个事件流最多 32 MiB，单行 JSON 最多 4 MiB；超限会停止任务并标记失败。stderr 仅保留最后 16 KB。

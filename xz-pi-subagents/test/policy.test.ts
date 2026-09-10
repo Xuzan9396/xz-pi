@@ -24,26 +24,27 @@ test("exclusive controls scheduling only and defaults to false for both tool mod
   assert.throws(() => planBatch({ tasks: [{ name: "a", task: "inspect", exclusive: "true" as unknown as boolean }] }, resources), /boolean/);
 });
 
-test("skills inherit exactly or select by name; missing skills/read fail closed", () => {
+test("skills inherit when read is available and disable implicit inheritance without read", () => {
   const withSkills = { ...resources, skills: [{ name: "global", filePath: "/skills/global/SKILL.md" }, { name: "cli", filePath: "/elsewhere/cli.md" }] };
   const task = { name: "a", task: "inspect" };
   assert.equal(planBatch({ tasks: [task] }, withSkills)[0]?.skillPaths.length, 2);
   assert.deepEqual(planBatch({ tasks: [{ ...task, skills: ["cli"] }] }, withSkills)[0]?.skillPaths, ["/elsewhere/cli.md"]);
+  assert.deepEqual(planBatch({ tasks: [{ ...task, tools: [] }] }, withSkills)[0]?.skillPaths, []);
   assert.deepEqual(planBatch({ tasks: [{ ...task, tools: [], skills: [] }] }, withSkills)[0]?.skillPaths, []);
-  assert.throws(() => planBatch({ tasks: [{ ...task, tools: [] }] }, withSkills), /read tool/);
+  assert.throws(() => planBatch({ tasks: [{ ...task, tools: [], skills: ["cli"] }] }, withSkills), /read tool/);
   assert.throws(() => planBatch({ tasks: [{ ...task, skills: ["unknown"] }] }, withSkills), /not loaded/);
+
+  const withoutRead = { ...withSkills, tools: withSkills.tools.filter(name => name !== "read") };
+  assert.deepEqual(planBatch({ tasks: [task] }, withoutRead)[0]?.skillPaths, []);
 });
 
-test("operation context and worktree isolation are explicit and fail closed", () => {
-  const isolated = planBatch({ context: "shared", tasks: [{
-    name: "writer", task: "implement", mode: "write", operation: "implement", isolation: "worktree", context: "only src/api", skills: [],
+test("operation and task-specific context are explicit", () => {
+  const implementation = planBatch({ context: "shared", tasks: [{
+    name: "writer", task: "implement", mode: "write", operation: "implement", context: "only src/api", skills: [],
   }] }, resources)[0]!;
-  assert.equal(isolated.task.requireChanges, true);
-  assert.match(isolated.context, /Shared batch context:\nshared/);
-  assert.match(isolated.context, /Task-specific context:\nonly src\/api/);
-  assert.throws(() => planBatch({ tasks: [{ name: "a", task: "research", mode: "write", operation: "research", isolation: "worktree" }] }, resources), /only available/);
+  assert.match(implementation.context, /Shared batch context:\nshared/);
+  assert.match(implementation.context, /Task-specific context:\nonly src\/api/);
   assert.throws(() => planBatch({ tasks: [{ name: "a", task: "implement", operation: "implement" }] }, resources), /mode: write/);
-  assert.throws(() => planBatch({ tasks: [{ name: "a", task: "inspect", requireChanges: true }] }, resources), /requires worktree/);
 });
 
 test("validation rejects duplicate/unsafe labels and invalid limits", () => {

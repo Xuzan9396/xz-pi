@@ -6,7 +6,6 @@ import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ChildEvents, JsonLines, cleanText, clip, MAX_STREAM_BYTES } from "./protocol.js";
 import { RESULT_PROTOCOL, parseTaskResult } from "./task-result.js";
-import { captureTaskWorktree, prepareTaskWorktree } from "./worktree.js";
 import { CHILD_ENV, type LaunchPlan, type RunOutcome, type TaskRecord } from "./types.js";
 
 export interface Invocation { command: string; args: string[] }
@@ -66,7 +65,6 @@ export function createRunner(options: RunnerOptions) {
     record.artifactDir = dir;
     const configFile = join(dir, "child.json");
     const promptFile = join(dir, "instructions.md");
-    await prepareTaskWorktree(plan, record);
     const operation = plan.task.operation ?? "general";
     const operationGuidance: Record<string, string> = {
       inspect: "Inspect and report evidence only; do not modify files or external state.",
@@ -83,7 +81,6 @@ export function createRunner(options: RunnerOptions) {
       "Do not start other agents. Return findings, changed files, validation evidence, and unresolved issues to main.",
       "If permission, a tool, or an MCP connection is unavailable, report the limitation; do not bypass it.",
       plan.task.mode === "read" ? "This is a read-only task. Do not modify files or external state." : operationGuidance[operation],
-      plan.task.isolation === "worktree" ? "You are in an isolated Git worktree. Do not commit, merge, rebase, or modify the main checkout; leave changes in this worktree for automatic patch handoff." : "",
       RESULT_PROTOCOL,
     ].filter(Boolean).join("\n");
     await Promise.all([
@@ -109,7 +106,7 @@ export function createRunner(options: RunnerOptions) {
         ...options.invocation.args,
         ...childArgs(plan, promptFile, options.childExtension ?? fileURLToPath(new URL("./child-extension.ts", import.meta.url))),
       ], {
-        cwd: record.worktree?.executionCwd ?? plan.resources.cwd, shell: false, detached: process.platform !== "win32",
+        cwd: plan.resources.cwd, shell: false, detached: process.platform !== "win32",
         stdio: ["pipe", "pipe", "pipe"], windowsHide: true,
         env: { ...process.env, [CHILD_ENV]: configFile, PI_CODING_AGENT_DIR: plan.resources.agentDir, PI_SKIP_VERSION_CHECK: "1", PI_TELEMETRY: "0" },
       });
@@ -217,15 +214,9 @@ export function createRunner(options: RunnerOptions) {
       outcome.status = "failed";
       outcome.error = `Child reported ${taskResult.status}: ${taskResult.blockers.join("; ") || taskResult.summary}`;
     }
-    try { await captureTaskWorktree(record); }
-    catch (error) {
-      if (record.worktree) record.worktree.integration = "preserved";
-      outcome.status = "failed";
-      outcome.error = [outcome.error, `Could not capture worktree changes; worktree preserved: ${String(error)}`].filter(Boolean).join("\n");
-    }
     await Promise.all([
       writeFile(join(dir, "output.md"), outcome.output, { mode: 0o600 }),
-      writeFile(join(dir, "result.json"), JSON.stringify({ status: outcome.status, error: outcome.error, tokens: record.tokens, taskResult, worktree: record.worktree }, null, 2), { mode: 0o600 }),
+      writeFile(join(dir, "result.json"), JSON.stringify({ status: outcome.status, error: outcome.error, tokens: record.tokens, taskResult }, null, 2), { mode: 0o600 }),
       writeFile(join(dir, "stderr.log"), cleanText(clip(stderr, 16_384)), { mode: 0o600 }),
     ]);
     return outcome;

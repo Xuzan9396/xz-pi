@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { isTerminal, type BatchFinalizer, type LaunchPlan, type TaskRecord, type TaskRunner } from "./types.js";
+import { isTerminal, type LaunchPlan, type TaskRecord, type TaskRunner } from "./types.js";
 
 /** One batch per main session. Tool access and explicit scheduling exclusivity are independent. */
 export class TaskManager {
@@ -7,7 +7,6 @@ export class TaskManager {
   private listeners = new Set<() => void>();
   private controllers = new Map<string, AbortController>();
   private current: Promise<TaskRecord[]> | undefined;
-  private finalizing: Promise<void> | undefined;
   private disposed = false;
   private cancelled = false;
   private pump: (() => void) | undefined;
@@ -38,21 +37,19 @@ export class TaskManager {
     this.changed();
     this.pump?.();
   }
-  async run(plans: LaunchPlan[], concurrency: number, runner: TaskRunner, signal?: AbortSignal, finalize?: BatchFinalizer): Promise<TaskRecord[]> {
+  async run(plans: LaunchPlan[], concurrency: number, runner: TaskRunner, signal?: AbortSignal): Promise<TaskRecord[]> {
     if (this.disposed) throw new Error("Session has been shut down");
     if (this.current) throw new Error("A batch is already running. Submit parallel tasks together in one xz_subagents_run call.");
     if (!plans.length || concurrency < 1 || concurrency > 4 || !Number.isInteger(concurrency)) throw new Error("Invalid batch/concurrency");
     this.cancelled = false;
     this.records = plans.map(plan => ({
       id: randomUUID(), name: plan.task.name, task: plan.task.task, mode: plan.task.mode ?? "read",
-      operation: plan.task.operation ?? "general", isolation: plan.task.isolation,
-      requireChanges: plan.task.requireChanges ?? plan.task.isolation === "worktree", exclusive: plan.task.exclusive ?? false,
+      operation: plan.task.operation ?? "general", exclusive: plan.task.exclusive ?? false,
       model: plan.task.model ?? plan.resources.model, status: "queued", activity: "", transcript: "", output: "", tokens: 0,
     }));
     const records = this.records;
     let resolveBatch!: (records: TaskRecord[]) => void;
     this.current = new Promise(resolve => { resolveBatch = resolve; });
-    this.finalizing = finalize ? this.current.then(settled => finalize(plans, settled, this.changed)) : undefined;
     let active = 0;
     let exclusive = false;
     this.pump = () => {
@@ -87,20 +84,17 @@ export class TaskManager {
     if (signal?.aborted) abort();
     else this.pump();
     try {
-      const settled = await this.current;
-      await this.finalizing;
-      return settled;
+      return await this.current;
     }
     finally {
       signal?.removeEventListener("abort", abort);
-      this.current = undefined; this.finalizing = undefined; this.pump = undefined; this.controllers.clear(); this.changed();
+      this.current = undefined; this.pump = undefined; this.controllers.clear(); this.changed();
     }
   }
   async dispose(): Promise<void> {
     this.disposed = true;
     this.cancelAll();
     await this.current;
-    await this.finalizing;
     this.listeners.clear();
   }
 }
