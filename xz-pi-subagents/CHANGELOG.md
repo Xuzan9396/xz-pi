@@ -1,5 +1,11 @@
 # xz-pi-subagents
 
+## 0.1.7
+
+### Patch Changes
+
+- 385169d: heder 兼容
+
 ## 0.1.6
 
 ### Patch Changes

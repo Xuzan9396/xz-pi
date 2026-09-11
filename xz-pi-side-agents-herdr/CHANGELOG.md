@@ -2,6 +2,12 @@
 
 ## 0.1.0
 
+### Patch Changes
+
+- 385169d: heder 兼容
+
+## 0.1.0
+
 - Initial Herdr-native side-agent implementation.
 - Added `/agent`, `/agents`, `/agent-resume` and orchestration tools.
 - Added one-worktree-per-pane lifecycle and guarded `/quit` cleanup.
