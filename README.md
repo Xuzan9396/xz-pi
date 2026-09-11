@@ -29,6 +29,7 @@ npm --version
 | [`xz-pi-btw`](./xz-pi-btw) | 提供不污染主会话的 `/btw` 临时旁路问答 | [![npm](https://img.shields.io/npm/v/xz-pi-btw)](https://www.npmjs.com/package/xz-pi-btw) |
 | [`xz-pi-build-ios-apps`](./xz-pi-build-ios-apps) | 提供 9 个 iOS、SwiftUI、Xcode 调试与性能分析技能 | [![npm](https://img.shields.io/npm/v/xz-pi-build-ios-apps)](https://www.npmjs.com/package/xz-pi-build-ios-apps) |
 | [`xz-pi-playwright-cli`](./xz-pi-playwright-cli) | 提供 Microsoft Playwright CLI 技能，用于浏览器自动化与测试 | [![npm](https://img.shields.io/npm/v/xz-pi-playwright-cli)](https://www.npmjs.com/package/xz-pi-playwright-cli) |
+| [`xz-pi-side-agents-herdr`](./xz-pi-side-agents-herdr) | 在 Herdr Pane 和独立 Git Worktree 中运行异步 Side Agent | 本地包，见安装说明 |
 | [`xz-pi-subagents`](./xz-pi-subagents) | main 批量委派并等待，输入框下方查看、进入和取消子任务 | 本地包，见安装说明 |
 | [`xz-pi-worktree`](./xz-pi-worktree) | 独立管理 Git Worktree、Patch 捕获、应用与清理 | 本地包，见安装说明 |
 | [`xz-pi-websearch`](./xz-pi-websearch) | 提供精简的 `web_search` 和 `fetch_content` 工具 | [![npm](https://img.shields.io/npm/v/xz-pi-websearch)](https://www.npmjs.com/package/xz-pi-websearch) |
@@ -47,6 +48,9 @@ pi install npm:xz-pi-build-ios-apps
 
 # Vim 模态编辑
 pi install npm:xz-pi-vim
+
+# Herdr Pane + Worktree 异步 Side Agent
+pi install ./xz-pi-side-agents-herdr
 
 # 多 agent 协作（从本仓库根目录安装）
 pi install ./xz-pi-subagents
@@ -88,6 +92,12 @@ pi install npm:xz-pi-vim@0.1.0
 显式指定版本后，该包会被固定在对应版本，不会被普通批量更新自动升级。
 
 ## 子包说明
+
+### xz-pi-side-agents-herdr
+
+保留 `pi-side-agents` 的 `/agent`、`/agents`、`/agent-resume` 和四个 Agent 工具，但使用 Herdr Pane 代替 tmux window。主 Pane 默认保持约 72% 宽度，Side Agent 在右侧纵向均衡堆叠。子 Agent `/quit` 时，只有 Worktree 无未提交修改且分支已合并到配置的主分支，才会删除 Worktree 并关闭 Pane。
+
+本包要求 Node.js 22+、Pi 0.84.4+、Herdr 0.9+。详细说明见 [`xz-pi-side-agents-herdr/README.md`](./xz-pi-side-agents-herdr/README.md)。
 
 ### xz-pi-subagents
 

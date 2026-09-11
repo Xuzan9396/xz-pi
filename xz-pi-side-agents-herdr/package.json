@@ -1,0 +1,47 @@
+{
+  "name": "xz-pi-side-agents-herdr",
+  "version": "0.1.0",
+  "description": "Herdr-native side-agent orchestration for Pi with one Git worktree per pane",
+  "type": "module",
+  "keywords": ["pi-package", "pi-extension", "agents", "herdr", "worktree"],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Xuzan9396/xz-pi.git",
+    "directory": "xz-pi-side-agents-herdr"
+  },
+  "homepage": "https://github.com/Xuzan9396/xz-pi/tree/main/xz-pi-side-agents-herdr",
+  "publishConfig": { "access": "public", "provenance": true },
+  "engines": { "node": ">=22" },
+  "files": ["index.ts", "src", "scripts", "skills", "README.md", "LICENSE", "CHANGELOG.md"],
+  "pi": {
+    "extensions": ["./index.ts"],
+    "skills": ["./skills"]
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "node --import tsx/esm --test 'test/**/*.test.ts'",
+    "check": "npm run typecheck && npm test"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": ">=0.84.4",
+    "@earendil-works/pi-coding-agent": ">=0.84.4",
+    "@earendil-works/pi-tui": ">=0.84.4",
+    "typebox": "*"
+  },
+  "peerDependenciesMeta": {
+    "@earendil-works/pi-ai": { "optional": true },
+    "@earendil-works/pi-coding-agent": { "optional": true },
+    "@earendil-works/pi-tui": { "optional": true },
+    "typebox": { "optional": true }
+  },
+  "devDependencies": {
+    "@earendil-works/pi-ai": "0.84.4",
+    "@earendil-works/pi-coding-agent": "0.84.4",
+    "@earendil-works/pi-tui": "0.84.4",
+    "@types/node": "^22.0.0",
+    "tsx": "^4.20.0",
+    "typebox": "1.3.7",
+    "typescript": "^5.9.0"
+  }
+}
