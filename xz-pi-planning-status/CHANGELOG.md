@@ -1,5 +1,9 @@
 # xz-pi-planning-status
 
+## Unreleased
+
+- 当前进度为空或无效时，回退展示版本号最大的归档计划。
+
 ## 0.1.0
 
 ### Patch Changes

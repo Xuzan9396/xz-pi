@@ -19,10 +19,38 @@ const state = `# XZ Planning State
 | 99 | 不应读取的归档计划 |
 `;
 
-test("parses the numerically latest plan from 当前进度 only", () => {
+test("prefers the numerically latest plan from 当前进度", () => {
   assert.deepEqual(parseLatestCurrentPlan(state), {
     version: "36",
     requirement: "TG机器人加安全额度申请交互命令",
+  });
+});
+
+test("falls back to the numerically latest archived plan when 当前进度 is empty", () => {
+  const markdown = `## 当前进度
+| 版本 | 需求 |
+| --- | --- |
+
+## 已归档
+| 版本 | 需求 | 完成时间 |
+| --- | --- | --- |
+| 9 | 较早归档 | 2026-01-01 |
+| 11 | 最新归档 | 2026-01-03 |
+| 10 | 中间归档 | 2026-01-02 |
+`;
+  assert.deepEqual(parseLatestCurrentPlan(markdown), { version: "11", requirement: "最新归档" });
+});
+
+test("reads 已归档 when 当前进度 is absent or invalid", () => {
+  const archived = `## 已归档
+| 需求 | 版本 |
+| --- | --- |
+| 已归档需求 | 12.1 |
+`;
+  assert.deepEqual(parseLatestCurrentPlan(archived), { version: "12.1", requirement: "已归档需求" });
+  assert.deepEqual(parseLatestCurrentPlan(`## 当前进度\nnot a table\n\n${archived}`), {
+    version: "12.1",
+    requirement: "已归档需求",
   });
 });
 

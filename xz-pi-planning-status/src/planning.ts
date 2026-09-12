@@ -5,10 +5,14 @@ export interface CurrentPlan {
 
 const VERSION_PATTERN = /^\d+(?:\.\d+)*$/;
 
-/** Parse the latest valid row from the "当前进度" Markdown table. */
+/** Parse the latest current plan, falling back to the latest archived plan. */
 export function parseLatestCurrentPlan(markdown: string): CurrentPlan | null {
   const lines = markdown.split(/\r?\n/);
-  const sectionStart = lines.findIndex((line) => /^##\s+当前进度\s*$/.test(line.trim()));
+  return parseLatestPlanFromSection(lines, "当前进度") ?? parseLatestPlanFromSection(lines, "已归档");
+}
+
+function parseLatestPlanFromSection(lines: string[], heading: string): CurrentPlan | null {
+  const sectionStart = lines.findIndex((line) => line.trim() === `## ${heading}`);
   if (sectionStart < 0) return null;
 
   const section: string[] = [];

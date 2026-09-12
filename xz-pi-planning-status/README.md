@@ -1,6 +1,6 @@
 # xz-pi-planning-status
 
-在 Pi Footer 的 MCP 状态前展示当前项目 `.xz_planning/STATE.md` 中“当前进度”的最新计划。
+在 Pi Footer 的 MCP 状态前展示当前项目 `.xz_planning/STATE.md` 中的最新计划。
 
 ```text
 当前计划：36 · TG机器人加安全额度申请交互命令
@@ -8,7 +8,8 @@
 
 ## 行为
 
-- 只读取 `## 当前进度` 下的 Markdown 表格。
+- 优先读取 `## 当前进度` 下的 Markdown 表格。
+- 当前进度没有有效计划时，回退读取 `## 已归档` 下的最新计划。
 - 按数字分段比较版本号，例如 `35.3 < 35.10 < 36`。
 - 文件不存在、不可读或无法解析时保持空白，不弹出错误。
 - 监听 `.xz_planning/STATE.md`，文件变化后自动刷新。
