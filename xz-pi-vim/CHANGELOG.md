@@ -1,5 +1,11 @@
 # xz-pi-vim
 
+## 0.2.2
+
+### Patch Changes
+
+- 1a89c5d: 光标展示
+
 ## Unreleased
 
 - 修复 `/reload` 后 Pi 重置硬件光标导致输入区完全没有可见光标的问题。
