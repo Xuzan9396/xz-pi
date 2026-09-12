@@ -1,5 +1,11 @@
 # xz-pi-planning-status
 
+## 0.1.1
+
+### Patch Changes
+
+- c9a2bcc: guidang
+
 ## Unreleased
 
 - 当前进度为空或无效时，回退展示版本号最大的归档计划。

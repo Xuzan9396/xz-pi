@@ -1,6 +1,6 @@
 {
   "name": "xz-pi-planning-status",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Show the latest .xz_planning plan in Pi's footer",
   "type": "module",
   "keywords": [
