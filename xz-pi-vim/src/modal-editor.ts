@@ -33,6 +33,7 @@ export type XzModalEditorOptions = {
   toolReferences?: boolean;
   highlightToolReferences?: boolean;
   referenceTracker?: ToolReferenceTracker;
+  syncCursor?: (mode: ActiveMode) => boolean;
 };
 
 const MOTION_KEYS = new Set<MotionKey>(["h", "j", "k", "l", "0", "^", "$", "w", "b", "e", "G"]);
@@ -63,6 +64,7 @@ export class XzModalEditor extends CustomEditor {
   private readonly toolReferencesEnabled: boolean;
   private readonly highlightToolReferencesEnabled: boolean;
   private readonly referenceTracker: ToolReferenceTracker;
+  private readonly syncCursorFn: (mode: ActiveMode) => boolean;
   private pendingCompletedReference: CompletedToolReference | null = null;
 
   constructor(tui: ConstructorArgs[0], theme: ConstructorArgs[1], keybindings: ConstructorArgs[2], options: XzModalEditorOptions = {}) {
@@ -76,6 +78,7 @@ export class XzModalEditor extends CustomEditor {
     this.toolReferencesEnabled = options.toolReferences ?? true;
     this.highlightToolReferencesEnabled = options.highlightToolReferences ?? true;
     this.referenceTracker = options.referenceTracker ?? new ToolReferenceTracker();
+    this.syncCursorFn = options.syncCursor ?? (() => false);
     this.mode = options.startInNormal ? "normal" : "insert";
     this.insertSessionStart = this.mode === "insert" ? this.captureSnapshot() : null;
   }
@@ -141,8 +144,9 @@ export class XzModalEditor extends CustomEditor {
   }
 
   override render(width: number): string[] {
+    const hardwareCursorActive = this.cursorShapeEnabled && this.syncCursorFn(this.getMode());
     const lines = super.render(width);
-    if (this.cursorShapeEnabled) stripSoftwareCursorWhenHardwareCursorIsUsed(lines);
+    if (hardwareCursorActive) stripSoftwareCursorWhenHardwareCursorIsUsed(lines);
     if (this.toolReferencesEnabled && this.highlightToolReferencesEnabled) this.highlightToolReferences(lines);
     if (lines.length === 0 || width <= 0) return lines;
     const label = this.colorModeLabel(this.buildModeLabel());

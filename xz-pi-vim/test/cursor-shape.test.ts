@@ -6,37 +6,47 @@ import { CursorShapeController, stripSoftwareCursorWhenHardwareCursorIsUsed } fr
 test("cursor controller changes shape and restores terminal state", () => {
   const writes: string[] = [];
   const hardware: boolean[] = [];
+  let hardwareActive = false;
   const controller = new CursorShapeController({
     terminal: { write: (data) => writes.push(data) },
-    getShowHardwareCursor: () => false,
-    setShowHardwareCursor: (value) => hardware.push(value),
+    getShowHardwareCursor: () => hardwareActive,
+    setShowHardwareCursor: (value) => {
+      hardwareActive = value;
+      hardware.push(value);
+    },
   }, true);
 
-  controller.sync("insert");
-  controller.sync("insert");
-  controller.sync("normal");
+  assert.equal(controller.sync("insert"), true);
+  assert.equal(controller.sync("insert"), true);
+  assert.equal(controller.sync("normal"), true);
   controller.dispose();
 
   assert.deepEqual(writes, ["\x1b[6 q", "\x1b[2 q", "\x1b[0 q"]);
   assert.deepEqual(hardware, [true, false]);
 });
 
-test("cursor controller reasserts visibility and shape after host settings are reapplied", () => {
+test("cursor controller recovers when the host hides the hardware cursor", () => {
   const writes: string[] = [];
   const hardware: boolean[] = [];
+  let hardwareActive = false;
   const controller = new CursorShapeController({
     terminal: { write: (data) => writes.push(data) },
-    getShowHardwareCursor: () => false,
-    setShowHardwareCursor: (value) => hardware.push(value),
+    getShowHardwareCursor: () => hardwareActive,
+    setShowHardwareCursor: (value) => {
+      hardwareActive = value;
+      hardware.push(value);
+    },
   }, true);
 
   controller.sync("insert");
-  controller.reassert();
+  hardwareActive = false;
+  assert.equal(controller.sync("insert"), true);
+  assert.equal(controller.reassert(), true);
   controller.dispose();
-  controller.reassert();
+  assert.equal(controller.reassert(), false);
 
-  assert.deepEqual(writes, ["\x1b[6 q", "\x1b[6 q", "\x1b[0 q"]);
-  assert.deepEqual(hardware, [true, true, false]);
+  assert.deepEqual(writes, ["\x1b[6 q", "\x1b[6 q", "\x1b[6 q", "\x1b[0 q"]);
+  assert.deepEqual(hardware, [true, true, true, false]);
 });
 
 test("hardware cursor mode strips the duplicate software cursor", () => {

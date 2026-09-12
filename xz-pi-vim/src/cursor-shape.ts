@@ -24,16 +24,24 @@ export class CursorShapeController {
     if (enabled) tui.setShowHardwareCursor?.(true);
   }
 
-  sync(mode: ActiveMode): void {
-    if (!this.enabled || this.disposed || this.lastMode === mode) return;
-    this.lastMode = mode;
-    this.writeShape(mode);
+  sync(mode: ActiveMode): boolean {
+    if (!this.enabled || this.disposed) return false;
+
+    const wasActive = this.tui.getShowHardwareCursor?.() === true;
+    if (!wasActive) this.tui.setShowHardwareCursor?.(true);
+    const isActive = this.tui.getShowHardwareCursor?.() === true;
+    if (this.lastMode !== mode || (!wasActive && isActive)) {
+      this.lastMode = mode;
+      this.writeShape(mode);
+    }
+    return isActive;
   }
 
-  reassert(): void {
-    if (!this.enabled || this.disposed) return;
+  reassert(): boolean {
+    if (!this.enabled || this.disposed) return false;
     this.tui.setShowHardwareCursor?.(true);
     if (this.lastMode) this.writeShape(this.lastMode);
+    return this.tui.getShowHardwareCursor?.() === true;
   }
 
   dispose(reason?: string): void {

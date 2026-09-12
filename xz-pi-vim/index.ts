@@ -50,6 +50,7 @@ export default function xzPiVim(pi: ExtensionAPI): void {
         toolReferences: settings.toolReferences,
         highlightToolReferences: settings.highlightToolReferences,
         referenceTracker,
+        syncCursor: (mode) => cursorController?.sync(mode) ?? false,
       });
       activeEditor = editor;
       editor.setNotifyFn((message) => ctx.ui.notify(message, "warning"));

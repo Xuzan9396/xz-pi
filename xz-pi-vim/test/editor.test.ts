@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { CURSOR_MARKER } from "@earendil-works/pi-tui";
 import { createEditor, send } from "./harness.js";
 
 test("escape enters NORMAL and i returns to INSERT", () => {
@@ -7,6 +8,24 @@ test("escape enters NORMAL and i returns to INSERT", () => {
   assert.equal(editor.getMode(), "normal");
   editor.handleInput("i");
   assert.equal(editor.getMode(), "insert");
+});
+
+test("keeps the software cursor when hardware cursor activation fails", () => {
+  const editor = createEditor("", { cursorShape: true, syncCursor: () => false });
+  editor.focused = true;
+  const cursorLine = editor.render(40).find((line) => line.includes(CURSOR_MARKER));
+  assert.ok(cursorLine);
+  const afterMarker = cursorLine.slice(cursorLine.indexOf(CURSOR_MARKER) + CURSOR_MARKER.length);
+  assert.ok(afterMarker.startsWith("\x1b[7m "));
+});
+
+test("removes the duplicate software cursor when hardware cursor is active", () => {
+  const editor = createEditor("", { cursorShape: true, syncCursor: () => true });
+  editor.focused = true;
+  const cursorLine = editor.render(40).find((line) => line.includes(CURSOR_MARKER));
+  assert.ok(cursorLine);
+  const afterMarker = cursorLine.slice(cursorLine.indexOf(CURSOR_MARKER) + CURSOR_MARKER.length);
+  assert.ok(!afterMarker.startsWith("\x1b[7m "));
 });
 
 test("insert mode opens autocomplete for slash after whitespace", () => {
