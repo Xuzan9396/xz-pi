@@ -1,0 +1,51 @@
+{
+  "name": "xz-pi-planning-status",
+  "version": "0.1.0",
+  "description": "Show the latest .xz_planning plan in Pi's footer",
+  "type": "module",
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "planning",
+    "status"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Xuzan9396/xz-pi.git",
+    "directory": "xz-pi-planning-status"
+  },
+  "homepage": "https://github.com/Xuzan9396/xz-pi/tree/main/xz-pi-planning-status",
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "files": [
+    "index.ts",
+    "src",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "node --import tsx/esm --test 'test/**/*.test.ts'",
+    "check": "npm run typecheck && npm test"
+  },
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": ">=0.84.4"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "0.84.4",
+    "@earendil-works/pi-tui": "0.84.4",
+    "@types/node": "^22.0.0",
+    "tsx": "^4.20.0",
+    "typescript": "^5.9.0"
+  }
+}
