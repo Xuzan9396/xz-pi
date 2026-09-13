@@ -100,6 +100,7 @@ export default function sideAgentsHerdr(pi: ExtensionAPI): void {
     description: "Resume a previously /quit side-agent session in its retained worktree/Herdr pane",
     handler: async (args, ctx) => {
       if (args.trim()) { ctx.ui.notify("/agent-resume takes no arguments", "error"); return; }
+      if (!ctx.isProjectTrusted()) { ctx.ui.notify("Side-agent resume requires a trusted project", "error"); return; }
       if (!ctx.hasUI) return;
       const service = await serviceFor(ctx);
       const candidates = (await service.list()).filter(record => ["paused", "failed", "crashed"].includes(record.status) && record.childSessionId);

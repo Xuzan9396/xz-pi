@@ -87,5 +87,19 @@ test("service creates named worktrees and places agents in a right-hand stack", 
   assert.deepEqual({ targetPaneId: herdr.splits[1].targetPaneId, direction: herdr.splits[1].direction, ratio: herdr.splits[1].ratio }, { targetPaneId: "child-1", direction: "down", ratio: 0.5 });
   assert.equal(herdr.prompts.length, 2);
   assert.equal(herdr.agentArgs.length, 2);
-  assert.equal(herdr.agentArgs.every(args => args.includes("--extension") && args.some(value => value.endsWith("/index.ts"))), true);
+  assert.equal(herdr.agentArgs.every(args => args.includes("--approve") && args.includes("--extension") && args.some(value => value.endsWith("/index.ts"))), true);
+});
+
+test("service temporarily approves generated worktrees when resuming child Pi", async t => {
+  const previousPane = process.env.HERDR_PANE_ID;
+  process.env.HERDR_PANE_ID = "main";
+  t.after(() => { if (previousPane === undefined) delete process.env.HERDR_PANE_ID; else process.env.HERDR_PANE_ID = previousPane; });
+  const { service, herdr, ctx } = await fixture(t);
+
+  const started = await service.start(ctx, { task: "resume auth", branchHint: "resume-auth" });
+  await service.update(started.id, { status: "paused", childSessionId: "/tmp/child.jsonl" });
+  await service.start(ctx, { task: "resume auth", resumeId: started.id });
+
+  assert.deepEqual(herdr.agentArgs.at(-1)?.filter(arg => arg === "--approve"), ["--approve"]);
+  assert.deepEqual(herdr.agentArgs.at(-1)?.slice(-2), ["--session", "/tmp/child.jsonl"]);
 });

@@ -113,7 +113,10 @@ export class SideAgentService {
       // Always pass this extension explicitly. This keeps child lifecycle hooks
       // available when the parent itself was started with `pi -e <local-path>`;
       // Pi de-duplicates an already installed extension by resolved path.
-      const args: string[] = ["--extension", fileURLToPath(new URL("../index.ts", import.meta.url))];
+      // The parent entry points require an already trusted project. Carry that
+      // decision into this generated worktree for this child run only, rather
+      // than forcing users to persist trust for every task-specific path.
+      const args: string[] = ["--approve", "--extension", fileURLToPath(new URL("../index.ts", import.meta.url))];
       if (options.model) args.push("--model", options.model);
       const skills = join(record.worktreePath, ".pi", "side-agent-skills");
       try { await readdir(skills); args.push("--skill", skills); } catch { /* optional */ }
@@ -163,7 +166,7 @@ export class SideAgentService {
       paneId = pane.pane_id;
       await this.update(id, { paneId, tabId: pane.tab_id, workspaceId: pane.workspace_id });
     }
-    const args = ["--extension", fileURLToPath(new URL("../index.ts", import.meta.url)), "--session", record.childSessionId];
+    const args = ["--approve", "--extension", fileURLToPath(new URL("../index.ts", import.meta.url)), "--session", record.childSessionId];
     if (model) args.unshift("--model", model);
     const startup = await this.herdr.startAgent(id, paneId, args);
     await this.update(id, { status: startup === "blocked" ? "blocked" : "waiting_user", finishedAt: undefined, error: undefined });
