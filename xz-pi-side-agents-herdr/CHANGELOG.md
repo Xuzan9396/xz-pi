@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.1
+
+### Patch Changes
+
+- 6d1b49c: bug
+
 ## 0.1.0
 
 ### Patch Changes

@@ -1,6 +1,6 @@
 {
   "name": "xz-pi-side-agents-herdr",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Herdr-native side-agent orchestration for Pi with one Git worktree per pane",
   "type": "module",
   "keywords": [
