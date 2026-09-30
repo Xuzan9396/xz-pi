@@ -31,6 +31,7 @@ npm --version
 | [`xz-pi-playwright-cli`](./xz-pi-playwright-cli) | 提供 Microsoft Playwright CLI 技能，用于浏览器自动化与测试 | [![npm](https://img.shields.io/npm/v/xz-pi-playwright-cli)](https://www.npmjs.com/package/xz-pi-playwright-cli) |
 | [`xz-pi-side-agents-herdr`](./xz-pi-side-agents-herdr) | 在 Herdr Pane 和独立 Git Worktree 中运行异步 Side Agent | 本地包，见安装说明 |
 | [`xz-pi-subagents`](./xz-pi-subagents) | main 批量委派并等待，输入框下方查看、进入和取消子任务 | 本地包，见安装说明 |
+| [`xz-pi-usage`](./xz-pi-usage) | 显示 Codex/Copilot 等订阅的额度窗口、重置时间和 AI credits | 本地包，见安装说明 |
 | [`xz-pi-worktree`](./xz-pi-worktree) | 独立管理 Git Worktree、Patch 捕获、应用与清理 | 本地包，见安装说明 |
 | [`xz-pi-websearch`](./xz-pi-websearch) | 提供精简的 `web_search` 和 `fetch_content` 工具 | [![npm](https://img.shields.io/npm/v/xz-pi-websearch)](https://www.npmjs.com/package/xz-pi-websearch) |
 | [`xz-pi-vim`](./xz-pi-vim) | 为 Pi 终端输入区提供 Vim 风格模态编辑 | [![npm](https://img.shields.io/npm/v/xz-pi-vim)](https://www.npmjs.com/package/xz-pi-vim) |
@@ -124,6 +125,16 @@ pi install npm:xz-pi-btw
 ```
 
 详细说明见 [`xz-pi-btw/README.md`](./xz-pi-btw/README.md)。
+
+### xz-pi-usage
+
+页脚仅显示当前模型提供商的订阅额度，以不同 Unicode 符号和剩余百分比紧凑展示（例如 `◎p wk95% 6d0h · ↻3` 表示 Codex personal 周额度剩余 95%、6 天后重置、3 张可用重置券）；`/xz-usage` 查看所有已连接提供商的详细额度，包括 Codex personal/work 的 5 小时、周窗口和重置时间，以及 Copilot AI credits 使用量。页脚每 5 分钟刷新，`/xz-usage --refresh` 可强制刷新。
+
+```bash
+pi install ./xz-pi-usage
+```
+
+详细说明见 [`xz-pi-usage/README.md`](./xz-pi-usage/README.md)。
 
 ### xz-pi-build-ios-apps
 

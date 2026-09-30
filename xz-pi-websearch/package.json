@@ -1,7 +1,7 @@
 {
   "name": "xz-pi-websearch",
   "version": "0.1.0",
-  "description": "Minimal OpenAI/Codex web search and content fetch tools for Pi, with GitHub-aware handling.",
+  "description": "Multi-provider hosted web search, including xAI OCI, and GitHub-aware content fetching for Pi.",
   "type": "module",
   "keywords": [
     "pi-package",
@@ -14,6 +14,13 @@
     "index.ts",
     "github.ts",
     "openai-search.ts",
+    "anthropic-search.ts",
+    "oci-search.ts",
+    "search-router.ts",
+    "search-selector.ts",
+    "search-session.ts",
+    "search-settings.ts",
+    "search-types.ts",
     "web-content.ts",
     "README.md",
     "LICENSE"
@@ -46,11 +53,13 @@
   "peerDependencies": {
     "@earendil-works/pi-ai": "*",
     "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*",
     "typebox": "*"
   },
   "devDependencies": {
     "@earendil-works/pi-ai": "*",
     "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*",
     "@types/node": "^24.0.0",
     "@types/turndown": "^5.0.6",
     "typebox": "^1.0.0",
