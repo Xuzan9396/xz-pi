@@ -1,6 +1,6 @@
 {
   "name": "xz-pi-websearch",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Multi-provider hosted web search, including xAI OCI, and GitHub-aware content fetching for Pi.",
   "type": "module",
   "keywords": [
