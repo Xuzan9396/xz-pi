@@ -29,6 +29,12 @@ pi install /Users/admin/go/tmp_xz/xz-pi-vim
 - `EX`：执行退出、Pi slash command 或 shell command。
 - INSERT 模式支持在行中空白后输入 `/`，立即模糊匹配 Pi 命令。
 
+## 单轮工作时长
+
+用户提交 interactive 或 RPC 请求后，输入框底边右侧会从 `⏱ working 0秒` 开始计时，并每秒更新；计时标签显示在 Vim 模式标签左侧。流式期间追加 steer/followUp 会作为新请求重新计时；AI 完全 settled 后冻结最终时长，直到下一次请求。
+
+不足 1 分钟显示 `N秒`，不足 1 小时显示 `N分钟N秒`，达到 1 小时显示 `N小时N分钟N秒`。窄终端会优先保留 Vim 模式标签，空间不足时隐藏 working 计时标签。
+
 ## 首版按键
 
 ### 移动

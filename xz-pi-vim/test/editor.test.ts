@@ -28,6 +28,26 @@ test("removes the duplicate software cursor when hardware cursor is active", () 
   assert.ok(!afterMarker.startsWith("\x1b[7m "));
 });
 
+test("working duration label renders immediately left of the mode label", () => {
+  const editor = createEditor("");
+  editor.setWorkDurationLabel("⏱ working 3分钟12秒");
+
+  const bottom = editor.render(80).at(-1) ?? "";
+  const modeIndex = bottom.indexOf("NORMAL");
+  const durationIndex = bottom.indexOf("⏱ working 3分钟12秒");
+  assert.ok(durationIndex >= 0);
+  assert.ok(modeIndex > durationIndex);
+});
+
+test("working duration label yields to the mode label at narrow widths", () => {
+  const editor = createEditor("");
+  editor.setWorkDurationLabel("⏱ working 12小时34分钟56秒");
+
+  const bottom = editor.render(10).at(-1) ?? "";
+  assert.ok(!bottom.includes("working"));
+  assert.ok(bottom.includes("NORMAL"));
+});
+
 test("insert mode opens autocomplete for slash after whitespace", () => {
   const editor = createEditor("");
   let triggerCount = 0;

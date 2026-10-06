@@ -60,6 +60,6 @@ node <skill-root>/scripts/swiftui-preview-browser.mjs \
 
 ## Proof
 
-For browser or preview QA, save a browser screenshot showing the rendered Simulator frame when browser automation is available. Otherwise, capture simulator proof with the pinned XcodeBuildMCP CLI or ask the user to confirm the visible frame in the browser.
+For browser or preview QA, save a browser screenshot showing the rendered Simulator frame when browser automation is available. Otherwise, capture simulator proof with the registered XcodeBuildMCP server (or its pinned CLI fallback) or ask the user to confirm the visible frame in the browser.
 
 For hot reload QA, also report the launcher's `hot reloaded package preview ... in pid ...` output and show the changed frame after editing. Do not claim hot reload from a successful rebuild alone.

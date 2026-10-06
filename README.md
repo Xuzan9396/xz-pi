@@ -27,8 +27,9 @@ npm --version
 | 包 | 功能 | npm |
 | --- | --- | --- |
 | [`xz-pi-btw`](./xz-pi-btw) | 提供不污染主会话的 `/btw` 临时旁路问答 | [![npm](https://img.shields.io/npm/v/xz-pi-btw)](https://www.npmjs.com/package/xz-pi-btw) |
-| [`xz-pi-build-ios-apps`](./xz-pi-build-ios-apps) | 提供 9 个 iOS、SwiftUI、Xcode 调试与性能分析技能 | [![npm](https://img.shields.io/npm/v/xz-pi-build-ios-apps)](https://www.npmjs.com/package/xz-pi-build-ios-apps) |
+| [`xz-pi-build-ios-apps`](./xz-pi-build-ios-apps) | 提供自动路由、9 个专项技能与 XcodeBuildMCP MCP 集成 | [![npm](https://img.shields.io/npm/v/xz-pi-build-ios-apps)](https://www.npmjs.com/package/xz-pi-build-ios-apps) |
 | [`xz-pi-playwright-cli`](./xz-pi-playwright-cli) | 提供 Microsoft Playwright CLI 技能，用于浏览器自动化与测试 | [![npm](https://img.shields.io/npm/v/xz-pi-playwright-cli)](https://www.npmjs.com/package/xz-pi-playwright-cli) |
+| [`xz-pi-pmodel`](./xz-pi-pmodel) | 按 provider 分组模型，直接勾选全局/项目默认，只读 Pi 实际思考程度 | [![npm](https://img.shields.io/npm/v/xz-pi-pmodel)](https://www.npmjs.com/package/xz-pi-pmodel) |
 | [`xz-pi-side-agents-herdr`](./xz-pi-side-agents-herdr) | 在 Herdr Pane 和独立 Git Worktree 中运行异步 Side Agent | 本地包，见安装说明 |
 | [`xz-pi-subagents`](./xz-pi-subagents) | main 批量委派并等待，输入框下方查看、进入和取消子任务 | 本地包，见安装说明 |
 | [`xz-pi-usage`](./xz-pi-usage) | 显示 Codex/Copilot 等订阅的额度窗口、重置时间和 AI credits | 本地包，见安装说明 |
@@ -49,6 +50,9 @@ pi install npm:xz-pi-build-ios-apps
 
 # Vim 模态编辑
 pi install npm:xz-pi-vim
+
+# provider 分组模型选择、排序、隐藏和项目默认
+pi install npm:xz-pi-pmodel
 
 # Herdr Pane + Worktree 异步 Side Agent
 pi install ./xz-pi-side-agents-herdr
@@ -138,20 +142,20 @@ pi install ./xz-pi-usage
 
 ### xz-pi-build-ios-apps
 
-提供 9 个技能，覆盖 App Intents、SwiftUI UI 模式与重构、Liquid Glass、性能分析、ETTrace、内存泄漏、Simulator 调试和浏览器镜像。
+提供一个通用 `build-ios-apps` 路由技能和 9 个上游专项技能，覆盖 App Intents、SwiftUI UI 模式与重构、Liquid Glass、性能分析、ETTrace、内存泄漏、Simulator 调试和浏览器镜像。
 
 ```bash
 pi install npm:xz-pi-build-ios-apps
 ```
 
-该包要求 macOS、Xcode 和 Node.js。调试与镜像流程按需使用经过固定版本的 CLI：
+包内扩展会自动注册固定版本的 XcodeBuildMCP MCP 服务；Simulator 构建、运行、语义 UI、截图、运行日志和 LLDB 默认走 MCP，MCP 不可用时才使用固定版本 CLI。该注册兼容 Pi 内置 MCP 与 Pi 0.99+ 的 `pi-mcp-adapter`。
 
 ```bash
-npx --yes xcodebuildmcp@2.7.0 --help
+npx --yes xcodebuildmcp@2.7.0 tools --json
 npx --yes serve-sim@0.1.46 --help
 ```
 
-Pi 不加载上游 Codex 插件的 `.mcp.json`；本包已将调试流程改为 XcodeBuildMCP CLI，并将 Simulator 镜像改为普通浏览器工作流。
+安装后执行 `/reload`，并通过 `pi list` 与 `/mcp` 确认包和 `xcodebuildmcp` 已启用。仅存在于 npm 缓存目录并不代表 Pi 已加载该包。
 
 详细说明见 [`xz-pi-build-ios-apps/README.md`](./xz-pi-build-ios-apps/README.md)。
 
@@ -201,6 +205,18 @@ pi install npm:xz-pi-websearch
 > `xz-pi-websearch` 与 `pi-web-access` 都会注册 `web_search` 和 `fetch_content`。请勿同时启用；切换前可执行 `pi remove npm:pi-web-access`。
 
 详细说明见 [`xz-pi-websearch/README.md`](./xz-pi-websearch/README.md)。
+
+### xz-pi-pmodel
+
+注册独立的 `/pmodel` 模型选择器，按 provider 分组模型，保留折叠、包含式多关键词搜索、全局排序和隐藏恢复。`scoped` 模型行直接提供 `[ ] global`、`[ ] project`，左右选择操作位置，空格/回车勾选；每列最多一个默认，global 不可取消，project 可取消并继承 global。两层默认同时显示，不再通过 Ctrl+G 切层保存。勾选成功后刷新界面、不切换当前模型，关闭时统一 `/reload`；模型名处回车才切换。思考程度仅显示 Pi 当前真实值，完全由原生 `/thinking` 管理，无自定义设置菜单。隐藏管理仍保留全局/项目作用域，界面直接选择；排序始终全局共享。旧项目思考字段在可信项目内无备份清理一次，记录迁移完成后不再持续删除原生配置，保留全局和无关字段。`all` 只管理官方全局 `enabledModels` 成员，保存范围仍需完整重启 Pi 同步运行态；失效引用清理与项目模型/可见性回退规则保留。
+
+本包不会修改或覆盖官方 `/model`、`/scoped-models`、模型循环和 `/thinking`。要求 Node.js 22.19+ 与 Pi 1.0+。
+
+```bash
+pi install npm:xz-pi-pmodel
+```
+
+详细说明见 [`xz-pi-pmodel/README.md`](./xz-pi-pmodel/README.md)。
 
 ### xz-pi-vim
 

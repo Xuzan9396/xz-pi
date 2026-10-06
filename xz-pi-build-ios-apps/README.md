@@ -1,9 +1,12 @@
 # xz-pi-build-ios-apps
 
-Pi package that ports OpenAI's **Build iOS Apps** plugin to Pi-native skill workflows.
+Pi-native port of OpenAI's **Build iOS Apps** plugin, with automatic iOS workflow routing and a bundled XcodeBuildMCP registration.
 
-## Included skills
+## What is included
 
+The package exposes a broad `build-ios-apps` router plus all nine upstream specialist skills:
+
+- `build-ios-apps` — automatically routes general iOS, Swift, SwiftUI, Xcode, and Simulator requests
 - `ios-app-intents`
 - `ios-debugger-agent`
 - `ios-ettrace-performance`
@@ -14,21 +17,23 @@ Pi package that ports OpenAI's **Build iOS Apps** plugin to Pi-native skill work
 - `swiftui-ui-patterns`
 - `swiftui-view-refactor`
 
+It also includes the complete reusable upstream references, scripts, templates, and icons.
+
 ## Requirements
 
 - macOS 14.5 or newer
 - Xcode 16 or newer, including Command Line Tools
 - Node.js 18 or newer
-- Pi
+- Pi 0.99 or newer for extension-registered MCP servers
 
 Some workflows have additional on-demand requirements:
 
-- Simulator debugging: `xcodebuildmcp@2.7.0`
+- Xcode and Simulator automation: `xcodebuildmcp@2.7.0`
 - Simulator browser mirroring: `serve-sim@0.1.46`
 - ETTrace profiling: the `ettrace` Homebrew package and a matching app-side framework
 - Memory graphs: Apple's `leaks`, `xcrun`, and a running Simulator app
 
-The npm CLIs are not bundled or installed globally by this package. The skills invoke pinned versions through `npx` so each workflow remains reproducible.
+The npm CLIs are not installed globally. The MCP server and fallback workflows invoke reviewed, pinned versions through `npx`.
 
 ## Install
 
@@ -44,52 +49,75 @@ pi install -l ./xz-pi-build-ios-apps
 pi -e ./xz-pi-build-ios-apps
 ```
 
-Run `/reload` or restart Pi after installation. Skills can then be invoked explicitly, for example:
+Run `/reload` or restart Pi after installation. Confirm that the package is enabled with:
+
+```bash
+pi list
+```
+
+If the npm package exists under a Pi npm directory but its skills do not appear in the startup diagnostics, the package is not necessarily enabled. Open `pi config` and ensure both its extension and skills are active.
+
+## Automatic routing
+
+Pi advertises only skill names and descriptions until a skill is needed. This package adds a broad `build-ios-apps` routing skill and a short system-guidance section so requests involving iOS, SwiftUI, Xcode, Simulator, App Intents, profiling, or leaks proactively load the matching specialist workflow.
+
+Skills remain directly invocable when an explicit workflow is preferred:
 
 ```text
+/skill:build-ios-apps
 /skill:ios-debugger-agent
 /skill:swiftui-ui-patterns
 /skill:ios-app-intents
 ```
 
-## Verify external tools
+## XcodeBuildMCP integration
 
-Use the pinned versions without installing them globally:
+The package extension registers an MCP server named `xcodebuildmcp` with:
+
+- pinned package: `xcodebuildmcp@2.7.0`
+- enabled workflows: `simulator`, `ui-automation`, and `debugging`
+- five-minute request timeout for long Xcode operations
+- a model-facing description covering projects, schemes, Simulator UI, logs, screenshots, and LLDB
+
+The registration works with Pi's built-in MCP support. On Pi 0.99 or newer, `pi-mcp-adapter` also consumes extension registrations and exposes this server through its `mcp` gateway. A user or project MCP entry with the same name takes precedence, allowing local overrides without editing this package.
+
+Inside Pi, inspect `/mcp` or the active MCP gateway and verify that `xcodebuildmcp` is connected. The `ios-debugger-agent` skill prefers MCP for build, launch, semantic UI automation, screenshots, runtime-log artifacts, and LLDB. It uses the pinned CLI only when the server is unavailable.
+
+Verify the fallback tools manually without a global install:
 
 ```bash
-npx --yes xcodebuildmcp@2.7.0 --help
+npx --yes xcodebuildmcp@2.7.0 tools --json
 npx --yes --package xcodebuildmcp@2.7.0 xcodebuildmcp-doctor
 npx --yes serve-sim@0.1.46 --help
 ```
 
-A global install is also supported when you explicitly choose to manage the same versions yourself:
-
-```bash
-npm install -g xcodebuildmcp@2.7.0 serve-sim@0.1.46
-xcodebuildmcp --help
-serve-sim --help
-```
-
 ## Pi adaptations
 
-Pi does not load the upstream plugin's `.mcp.json`. The `ios-debugger-agent` skill therefore uses the XcodeBuildMCP CLI directly and requests JSON output where machine-readable results are useful.
+Codex metadata is translated into Pi behavior instead of copied as inert files:
 
-Simulator mirroring uses `serve-sim` to expose a local URL. Open that URL with an available Pi browser automation tool; if none is loaded, use macOS `open` and verify the rendered Simulator frame there.
+- `.codex-plugin/plugin.json` → npm/Pi package metadata and gallery assets
+- `.mcp.json` → the package extension's pinned `pi.registerMcpServer(...)` registration
+- plugin and skill `agents/openai.yaml` → the router skill, specialist descriptions, explicit `/skill:*` entries, and automatic system guidance
+- Codex direct MCP names → MCP discovery compatible with both Pi built-in MCP and `pi-mcp-adapter`
+- Codex in-app browser → an available Pi browser automation tool or the macOS default browser
+- Codex terminal-input APIs → an interactive foreground terminal or visible `tmux` pane for ETTrace
 
-ETTrace's interactive runner should be launched in a foreground terminal or a visible `tmux` pane so prompts can be answered directly.
+See [UPSTREAM.md](UPSTREAM.md) for the exact upstream snapshot and behavioral differences.
 
 ## Updating from upstream
 
-See [UPSTREAM.md](UPSTREAM.md). Copy the upstream skill payload, retain the Pi-specific adaptations described there, update the recorded commit and versions, then run:
+Copy the reusable upstream skill payload, retain and review the Pi adaptations in `UPSTREAM.md`, update the recorded commit and versions, then run:
 
 ```bash
 npm run check --workspace xz-pi-build-ios-apps
 npm pack --dry-run --workspace xz-pi-build-ios-apps
 ```
 
+The package tests assert the complete expected upstream skill file set so omitted references, scripts, or templates fail CI.
+
 ## Security
 
-Pi skills can instruct the agent to execute local commands with your user permissions. Review the skills and helper scripts before installation. The simulator workflows require an explicit device identifier, and temporary profiling/build output must remain outside the target application's source tree unless the user explicitly requests otherwise.
+Pi extensions and skills execute with your user permissions. This package starts XcodeBuildMCP through `npx` when Pi connects the registered server. Review the package before installation, use explicit Simulator identifiers, and keep temporary profiling or generated build output outside the target source tree unless requested otherwise.
 
 ## License
 

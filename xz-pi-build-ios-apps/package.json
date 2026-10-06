@@ -1,10 +1,13 @@
 {
   "name": "xz-pi-build-ios-apps",
   "version": "0.1.2",
-  "description": "Pi package for building, profiling, debugging, and refining iOS apps with SwiftUI and Xcode workflows.",
+  "description": "Pi-native iOS development workflows with automatic skill routing and XcodeBuildMCP integration.",
+  "type": "module",
   "license": "MIT",
   "keywords": [
     "pi-package",
+    "pi-extension",
+    "mcp",
     "ios",
     "swift",
     "swiftui",
@@ -14,6 +17,7 @@
     "debugging"
   ],
   "files": [
+    "index.ts",
     "skills",
     "assets",
     "README.md",
@@ -21,7 +25,9 @@
     "LICENSE"
   ],
   "scripts": {
-    "check": "node --test test/package.test.mjs"
+    "typecheck": "tsc --noEmit",
+    "test": "node --import tsx/esm --test test/*.test.mjs test/*.test.ts",
+    "check": "npm run typecheck && npm test"
   },
   "repository": {
     "type": "git",
@@ -34,9 +40,21 @@
     "provenance": true
   },
   "pi": {
+    "extensions": [
+      "./index.ts"
+    ],
     "skills": [
       "./skills"
     ],
     "image": "./assets/app-icon.png"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "0.84.4",
+    "@types/node": "^22.0.0",
+    "tsx": "^4.20.0",
+    "typescript": "^5.9.0"
   }
 }

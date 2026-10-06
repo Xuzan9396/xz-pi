@@ -32,6 +32,7 @@ export type XzModalEditorOptions = {
   inlineSlashCompletion?: boolean;
   toolReferences?: boolean;
   highlightToolReferences?: boolean;
+  workDurationLabel?: string | undefined;
   referenceTracker?: ToolReferenceTracker;
   syncCursor?: (mode: ActiveMode) => boolean;
 };
@@ -65,6 +66,7 @@ export class XzModalEditor extends CustomEditor {
   private readonly highlightToolReferencesEnabled: boolean;
   private readonly referenceTracker: ToolReferenceTracker;
   private readonly syncCursorFn: (mode: ActiveMode) => boolean;
+  private workDurationLabel: string | undefined;
   private pendingCompletedReference: CompletedToolReference | null = null;
 
   constructor(tui: ConstructorArgs[0], theme: ConstructorArgs[1], keybindings: ConstructorArgs[2], options: XzModalEditorOptions = {}) {
@@ -77,6 +79,7 @@ export class XzModalEditor extends CustomEditor {
     this.inlineSlashCompletionEnabled = options.inlineSlashCompletion ?? true;
     this.toolReferencesEnabled = options.toolReferences ?? true;
     this.highlightToolReferencesEnabled = options.highlightToolReferences ?? true;
+    this.workDurationLabel = options.workDurationLabel;
     this.referenceTracker = options.referenceTracker ?? new ToolReferenceTracker();
     this.syncCursorFn = options.syncCursor ?? (() => false);
     this.mode = options.startInNormal ? "normal" : "insert";
@@ -110,6 +113,12 @@ export class XzModalEditor extends CustomEditor {
 
   queueCompletedToolReference(completion: CompletedToolReference): void {
     this.pendingCompletedReference = completion;
+  }
+
+  setWorkDurationLabel(label: string | undefined): void {
+    if (this.workDurationLabel === label) return;
+    this.workDurationLabel = label;
+    this.requestRender();
   }
 
   override handleInput(data: string): void {
@@ -149,11 +158,16 @@ export class XzModalEditor extends CustomEditor {
     if (hardwareCursorActive) stripSoftwareCursorWhenHardwareCursorIsUsed(lines);
     if (this.toolReferencesEnabled && this.highlightToolReferencesEnabled) this.highlightToolReferences(lines);
     if (lines.length === 0 || width <= 0) return lines;
-    const label = this.colorModeLabel(this.buildModeLabel());
+    const modeLabel = this.colorModeLabel(this.buildModeLabel());
     const lastIndex = lines.length - 1;
     const current = lines[lastIndex] ?? "";
-    const available = Math.max(0, width - visibleWidth(label));
-    lines[lastIndex] = truncateToWidth(current, available, "") + label;
+    const availableBeforeMode = Math.max(0, width - visibleWidth(modeLabel));
+    const rawDurationLabel = this.workDurationLabel ?? "";
+    const durationLabel = rawDurationLabel && availableBeforeMode >= visibleWidth(rawDurationLabel) + 1
+      ? this.themeRef.fg?.("muted", rawDurationLabel) ?? rawDurationLabel
+      : "";
+    const availableForBorder = Math.max(0, availableBeforeMode - visibleWidth(durationLabel));
+    lines[lastIndex] = truncateToWidth(current, availableForBorder, "") + durationLabel + modeLabel;
     return lines;
   }
 

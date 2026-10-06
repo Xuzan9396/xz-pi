@@ -5,6 +5,7 @@ import { createInlineSlashAutocompleteProvider } from "./src/slash-autocomplete.
 import { readXzPiVimSettings } from "./src/settings.js";
 import { readEnabledPackageSources } from "./src/package-references.js";
 import { buildReferenceCatalog, createToolReferenceAutocompleteProvider, ToolReferenceTracker, type ToolReference } from "./src/tool-references.js";
+import { WorkDurationTimer } from "./src/work-duration.js";
 
 export { XzModalEditor } from "./src/modal-editor.js";
 
@@ -21,9 +22,16 @@ export default function xzPiVim(pi: ExtensionAPI): void {
   let activeEditor: XzModalEditor | null = null;
   let activateReferencedTools = true;
   let referencesForTurn: ToolReference[] = [];
+  let workDurationLabel: string | undefined;
+  const workDurationTimer = new WorkDurationTimer((duration) => {
+    workDurationLabel = `⏱ working ${duration}`;
+    activeEditor?.setWorkDurationLabel(workDurationLabel);
+  });
 
   pi.on("session_start", (event, ctx) => {
     const settings = readXzPiVimSettings(ctx.cwd, process.env.HOME, ctx.isProjectTrusted());
+    workDurationTimer.dispose();
+    workDurationLabel = undefined;
     referenceTracker.clear();
     activeEditor = null;
     activateReferencedTools = settings.activateReferencedTools;
@@ -49,6 +57,7 @@ export default function xzPiVim(pi: ExtensionAPI): void {
         inlineSlashCompletion: settings.inlineSlashCompletion,
         toolReferences: settings.toolReferences,
         highlightToolReferences: settings.highlightToolReferences,
+        workDurationLabel,
         referenceTracker,
         syncCursor: (mode) => cursorController?.sync(mode) ?? false,
       });
@@ -78,6 +87,7 @@ export default function xzPiVim(pi: ExtensionAPI): void {
   });
 
   pi.on("input", (event) => {
+    if (event.source !== "extension") workDurationTimer.start();
     if (event.source !== "interactive") return;
     const references = referenceTracker.consumeSubmitted(event.text);
     if (references.length === 0) return;
@@ -98,7 +108,13 @@ export default function xzPiVim(pi: ExtensionAPI): void {
     };
   });
 
+  pi.on("agent_settled", () => {
+    workDurationTimer.settle();
+  });
+
   pi.on("session_shutdown", (event) => {
+    workDurationTimer.dispose();
+    workDurationLabel = undefined;
     if (reloadCursorTimer) clearTimeout(reloadCursorTimer);
     reloadCursorTimer = null;
     cursorController?.dispose(event.reason);
