@@ -1,6 +1,6 @@
 {
   "name": "xz-pi-pmodel",
-  "version": "0.0.0",
+  "version": "1.0.0",
   "description": "Provider-grouped model picker and project-aware model defaults for Pi",
   "type": "module",
   "keywords": [

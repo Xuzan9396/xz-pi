@@ -1,5 +1,11 @@
 # xz-pi-pmodel
 
+## 1.0.0
+
+### Major Changes
+
+- b4f3e60: update
+
 ## 0.0.0
 
 - Initial development version of the provider-grouped `/pmodel` selector.

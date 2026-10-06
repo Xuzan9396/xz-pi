@@ -1,6 +1,6 @@
 {
   "name": "xz-pi-build-ios-apps",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Pi-native iOS development workflows with automatic skill routing and XcodeBuildMCP integration.",
   "type": "module",
   "license": "MIT",
