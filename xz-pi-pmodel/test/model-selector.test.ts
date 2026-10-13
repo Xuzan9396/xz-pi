@@ -60,14 +60,12 @@ function createSelector(options: {
   theme?: Theme;
   globalScope?: GlobalScopedModelsState;
   preferences?: { providers: Record<string, { visibleModels: string[] }> };
-  onToggleGlobalScope?: (model: Model<any>) => GlobalScopedModelsState | Promise<GlobalScopedModelsState>;
 } = {}) {
   const sonnet = model("anthropic", "sonnet");
   const opus = model("anthropic", "opus");
   const gpt = model("copilot", "gpt");
   const actions: SelectorAction[] = [];
   const preferenceChanges: Array<{ layer: string; override: PreferenceOverride }> = [];
-  const scopeChanges: Model<any>[] = [];
   const errors: unknown[] = [];
   const projectClears: unknown[] = [];
   const defaultChanges: Array<{ model: Model<any>; layer: "global" | "project" }> = [];
@@ -75,7 +73,7 @@ function createSelector(options: {
   let defaults: ModelDefaultState = options.defaultSource === "project"
     ? { global: { provider: "copilot", id: "gpt" }, project: defaultRef, effective: { ...defaultRef, source: "project" } }
     : { global: defaultRef, effective: { ...defaultRef, source: "global" } };
-  let globalScope = options.globalScope ?? {
+  const globalScope = options.globalScope ?? {
     modelIds: ["anthropic/sonnet", "copilot/gpt"], unrestricted: false, projectOverride: false, sessionDiffers: false,
   };
   const selector = new PModelSelectorComponent(
@@ -104,15 +102,6 @@ function createSelector(options: {
           defaults = { ...defaults, ...(effective ? { effective: { ...effective, source: defaults.project ? "project" as const : "global" as const } } : {}) };
         return defaults;
       },
-      onToggleGlobalScope(model) {
-        scopeChanges.push(model);
-        if (options.onToggleGlobalScope) return options.onToggleGlobalScope(model);
-        const ids = new Set(globalScope.modelIds);
-        if (ids.has(modelKey(model))) ids.delete(modelKey(model));
-        else ids.add(modelKey(model));
-        globalScope = { ...globalScope, modelIds: [...ids], sessionDiffers: true };
-        return globalScope;
-      },
       onError(error) { errors.push(error); },
       onPreferenceChange(layer, override) {
         if (options.failPreferences) throw new Error("read-only preferences");
@@ -124,7 +113,7 @@ function createSelector(options: {
       },
     },
   );
-  return { selector, actions, preferenceChanges, scopeChanges, defaultChanges, projectClears, errors, sonnet, opus, gpt };
+  return { selector, actions, preferenceChanges, defaultChanges, projectClears, errors, sonnet, opus, gpt };
 }
 
 test("selector starts scoped, groups providers, folds non-current groups, and toggles scope", () => {
@@ -135,6 +124,10 @@ test("selector starts scoped, groups providers, folds non-current groups, and to
     "model:anthropic",
     "provider:copilot",
   ]);
+  const rendered = selector.render(100);
+  assert.ok(rendered.some((line) => line.startsWith("  → ↓ anthropic")));
+  assert.ok(rendered.some((line) => line.startsWith("      ● sonnet")));
+  assert.ok(rendered.some((line) => line.startsWith("    → copilot")));
   selector.handleInput("tab");
   assert.equal(selector.getScope(), "all");
   assert.match(selector.render(100).join("\n"), /anthropic/);
@@ -188,7 +181,6 @@ test("a scrolled model slice keeps its provider context visible", () => {
     },
     {
       async onToggleModelDefault() { throw new Error("Scrolling test never saves defaults"); },
-      onToggleGlobalScope: () => ({ modelIds: [], unrestricted: false, projectOverride: false, sessionDiffers: true }),
       onPreferenceChange() {}, onClearProjectPreference() {},
     },
   );
@@ -337,10 +329,9 @@ test("all Enter checks/unchecks global scoped membership and never selects the c
   assert.match(h.selector.render(160).find((line) => line.includes("opus")) ?? "", /○/);
   h.selector.handleInput("enter");
   await settle();
-  assert.deepEqual(h.scopeChanges, [h.opus]);
   assert.ok(h.selector.getGlobalScopedModelIds().includes("anthropic/opus"));
   assert.match(h.selector.render(160).find((line) => line.includes("opus")) ?? "", /✓/);
-  assert.match(h.selector.render(160).join("\n"), /Restart Pi.*reload is not enough/);
+  assert.match(h.selector.render(160).join("\n"), /unsaved changes.*Ctrl\+S/);
   h.selector.handleInput("enter");
   await settle();
   assert.ok(!h.selector.getGlobalScopedModelIds().includes("anthropic/opus"));
@@ -352,23 +343,24 @@ test("all Enter checks/unchecks global scoped membership and never selects the c
   assert.ok(!h.selector.getRows().some((row) => row.kind === "model" && row.entry.id === "opus"));
 });
 
-test("all disables every default, thinking, visibility, layer, reset and reorder action", () => {
+test("all saves its complete draft with Ctrl+S and disables unrelated actions", () => {
   const h = createSelector();
   h.selector.handleInput("tab");
   h.selector.handleInput("down");
+  h.selector.handleInput("enter");
   const rowsBefore = h.selector.getRows().map((row) => row.kind === "provider" ? row.provider : row.entry.fullId);
-  for (const key of ["thinking", "save", "hidden", "alt-up", "alt-down", "\u0007", "\u0018", "\u0012"]) {
+  for (const key of ["thinking", "hidden", "alt-up", "alt-down", "\u0007", "\u0018", "\u0012"]) {
     h.selector.handleInput(key);
   }
   assert.equal(h.selector.getEditLayer(), "project");
   assert.equal(h.selector.isShowingHidden(), false);
-  assert.deepEqual(h.actions, []);
   assert.deepEqual(h.preferenceChanges, []);
-  assert.deepEqual(h.scopeChanges, []);
   assert.deepEqual(h.selector.getRows().map((row) => row.kind === "provider" ? row.provider : row.entry.fullId), rowsBefore);
-  const rendered = h.selector.render(160).join("\n");
-  assert.match(rendered, /all only checks\/unchecks/);
-  assert.doesNotMatch(rendered, /Layer: project|Thinking:|Enter apply|Clear project override/);
+  h.selector.handleInput("save");
+  assert.deepEqual(h.actions, [{
+    type: "save-global-scope",
+    modelIds: ["anthropic/sonnet", "anthropic/opus", "copilot/gpt"],
+  }]);
 });
 
 test("all includes models hidden by picker preferences while unavailable IDs remain non-actionable", () => {
@@ -394,37 +386,25 @@ test("current status is independent of all's scoped checkmark", () => {
   assert.match(rendered.join("\n"), /differs from this session/);
 });
 
-test("failed scoped saves retain the old checkmark and show the error", async () => {
-  const h = createSelector({ onToggleGlobalScope: async () => { throw new Error("settings are read-only"); } });
-  h.selector.handleInput("tab");
-  h.selector.handleInput("down");
-  h.selector.handleInput("enter");
-  await settle();
-  assert.ok(!h.selector.getGlobalScopedModelIds().includes("anthropic/opus"));
-  assert.match(h.selector.render(160).find((line) => line.includes("opus")) ?? "", /○/);
-  assert.match(h.selector.render(160).join("\n"), /settings are read-only/);
-  assert.doesNotMatch(h.selector.render(160).join("\n"), /Global scope saved/);
-  assert.equal(h.errors.length, 1);
-  assert.deepEqual(h.actions, []);
-});
+test("all keeps edits as a draft until Ctrl+S and Escape discards them", () => {
+  const save = createSelector();
+  save.selector.handleInput("tab");
+  save.selector.handleInput("down");
+  save.selector.handleInput("enter");
+  assert.ok(save.selector.getGlobalScopedModelIds().includes("anthropic/opus"));
+  assert.deepEqual(save.actions, []);
+  save.selector.handleInput("save");
+  assert.deepEqual(save.actions, [{
+    type: "save-global-scope",
+    modelIds: ["anthropic/sonnet", "anthropic/opus", "copilot/gpt"],
+  }]);
 
-test("pending scoped writes serialize input and update only after persistence succeeds", async () => {
-  let finish: ((state: GlobalScopedModelsState) => void) | undefined;
-  const h = createSelector({
-    onToggleGlobalScope: () => new Promise((resolve) => { finish = resolve; }),
-  });
-  h.selector.handleInput("tab");
-  h.selector.handleInput("down");
-  h.selector.handleInput("enter");
-  h.selector.handleInput("enter");
-  h.selector.handleInput("escape");
-  assert.equal(h.scopeChanges.length, 1);
-  assert.deepEqual(h.actions, []);
-  assert.match(h.selector.render(160).join("\n"), /Saving global scoped selection/);
-  assert.ok(!h.selector.getGlobalScopedModelIds().includes("anthropic/opus"));
-  finish!({ modelIds: ["anthropic/opus", "anthropic/sonnet", "copilot/gpt"], unrestricted: false, projectOverride: false, sessionDiffers: true });
-  await settle();
-  assert.ok(h.selector.getGlobalScopedModelIds().includes("anthropic/opus"));
+  const discard = createSelector();
+  discard.selector.handleInput("tab");
+  discard.selector.handleInput("down");
+  discard.selector.handleInput("enter");
+  discard.selector.handleInput("escape");
+  assert.deepEqual(discard.actions, [{ type: "cancel" }]);
 });
 
 test("current and project/global default badges use different bold colors, including selected rows and narrow widths", () => {
@@ -466,12 +446,11 @@ test("current and project/global default badges use different bold colors, inclu
 
 test("folded provider headers keep current/default status visible without changing scoped membership", () => {
   const h = createSelector();
-  assert.match(h.selector.render(120).find((line) => line.includes("▸ copilot")) ?? "", /global default/);
+  assert.match(h.selector.render(120).find((line) => line.includes("→ copilot")) ?? "", /global default/);
   h.selector.handleInput("left");
   assert.match(h.selector.render(120).find((line) => line.includes("anthropic")) ?? "", /current/);
   h.selector.handleInput("tab");
   h.selector.handleInput("enter"); // expand provider, not bulk-check
-  assert.deepEqual(h.scopeChanges, []);
   assert.deepEqual(h.actions, []);
   assert.equal(h.selector.getGlobalScopedModelIds().length, 2);
 });

@@ -68,6 +68,14 @@ test("catalog groups MCP and package references before individual tools", () => 
   assert.deepEqual(catalog[0]?.memberToolNames, ["mcp__context7_mcp__query_docs"]);
 });
 
+test("native MCP namespace metadata uses the real server name", () => {
+  const catalog = buildReferenceCatalog([{
+    name: "github_get_me", description: "Get me", namespace: { name: "github" },
+    sourceInfo: { source: "builtin:mcp", path: "github", origin: "top-level" },
+  }]);
+  assert.equal(catalog.find((value) => value.kind === "mcp")?.name, "github");
+});
+
 test("catalog includes enabled packages without tools and deduplicates package versions", async () => {
   const catalog = buildReferenceCatalog([], [
     "npm:xz-pi-vim", "npm:xz-pi-btw", "npm:xz-pi-vim@0.2.0", "npm:@scope/pkg@1.0.0", "npm:@scope/pkg",
@@ -87,7 +95,7 @@ test("catalog includes enabled packages without tools and deduplicates package v
   assert.deepEqual(completed?.reference.memberToolNames, []);
 });
 
-test("MCP-only packages remain selectable as packages with the correct reference kind", async () => {
+test("adapter gateways remain packages/tools, not fake MCP servers", async () => {
   const catalog = buildReferenceCatalog([{
     name: "mcp",
     description: "MCP gateway",
@@ -98,11 +106,60 @@ test("MCP-only packages remain selectable as packages with the correct reference
   let completed: CompletedToolReference | undefined;
   const provider = createToolReferenceAutocompleteProvider(fallback, () => catalog, (value) => { completed = value; });
   const suggestions = await provider.getSuggestions(["$"], 0, 1, { signal });
-  for (const kind of ["mcp", "package"] as const) {
+  assert.equal(catalog.filter((value) => value.kind === "mcp").length, 0);
+  for (const kind of ["package"] as const) {
     const item = suggestions!.items.find((value) => value.description?.startsWith(kind.toUpperCase()))!;
     provider.applyCompletion(["$"], 0, 1, item, "$");
     assert.equal(completed?.reference.kind, kind);
   }
+});
+
+test("adapter status includes enabled lazy servers and authoritative tool counts", async () => {
+  const sourceInfo = { source: "npm:pi-mcp-adapter", path: "/pkg/index.ts", origin: "package" as const };
+  const catalog = buildReferenceCatalog([
+    { name: "mcp", description: "Gateway", sourceInfo },
+    { name: "mcp__context7_mcp", description: "Namespace proxy", sourceInfo },
+  ], ["npm:pi-mcp-adapter"], [
+    { name: "context7_mcp", toolCount: 2, status: "cached", disabled: false },
+    { name: "github_mcp", toolCount: 0, status: "not-connected", disabled: false },
+    { name: "disabled_mcp", toolCount: 9, status: "disabled", disabled: true },
+  ]);
+  const servers = catalog.filter((value) => value.kind === "mcp");
+  assert.deepEqual(servers.map((value) => value.name), ["context7_mcp", "github_mcp"]);
+  assert.match(servers[0]!.description!, /2 tools/);
+  assert.deepEqual(servers[0]!.memberToolNames, ["mcp__context7_mcp"]);
+  assert.deepEqual(servers[1]!.memberToolNames, ["mcp"]);
+  assert.match(servers[1]!.description!, /not-connected/);
+  const provider = createToolReferenceAutocompleteProvider(fallback, () => catalog, () => {});
+  const suggestions = await provider.getSuggestions(["$"], 0, 1, { signal });
+  assert.deepEqual(suggestions!.items.slice(0, 2).map((item) => item.label), ["◆ context7_mcp", "◆ github_mcp"]);
+});
+
+test("direct-loading the adapter keeps its gateway and associates standard direct tools", () => {
+  const sourceInfo = { source: "/extensions/pi-mcp-adapter/index.ts", path: "/extensions/pi-mcp-adapter/index.ts", origin: "top-level" as const };
+  const catalog = buildReferenceCatalog([
+    { name: "mcp", description: "Gateway", sourceInfo },
+    { name: "context7_mcp_query_docs", description: "Direct tool", sourceInfo },
+    { name: "disabled_mcp_query", description: "Retired direct tool", sourceInfo },
+  ], [], [
+    { name: "context7_mcp", toolCount: 2, status: "connected", disabled: false },
+    { name: "github_mcp", toolCount: 0, status: "not-connected", disabled: false },
+    { name: "disabled_mcp", toolCount: 1, status: "disabled", disabled: true },
+  ]);
+  assert.deepEqual(catalog.find((value) => value.kind === "mcp" && value.name === "context7_mcp")?.memberToolNames, ["context7_mcp_query_docs"]);
+  assert.deepEqual(catalog.find((value) => value.kind === "mcp" && value.name === "github_mcp")?.memberToolNames, ["mcp"]);
+  assert.equal(catalog.some((value) => value.name === "disabled_mcp_query"), false);
+});
+
+test("disabled MCP servers and hidden retired tools do not leak into dollar references", () => {
+  const sourceInfo = { source: "npm:pi-mcp-adapter", path: "/pkg/index.ts", origin: "package" as const };
+  const tools = [
+    { name: "mcp", description: "Gateway", sourceInfo },
+    { name: "mcp__disabled_mcp", description: "Retired proxy", sourceInfo },
+    { name: "retired_tool", description: "Hidden", exposure: "hidden", sourceInfo },
+  ];
+  const catalog = buildReferenceCatalog(tools, [], [{ name: "disabled_mcp", toolCount: 2, status: "disabled", disabled: true }]);
+  assert.equal(catalog.some((value) => value.name === "disabled_mcp" || value.name === "mcp__disabled_mcp" || value.name === "retired_tool"), false);
 });
 
 test("dollar suggestions prioritize MCP, then packages, then tools", async () => {
@@ -144,6 +201,17 @@ test("tracker shifts tags, expands intersecting deletion, and captures submissio
   assert.deepEqual(tracker.expandRange({ start: 12, end: 13 }), { start: 11, end: 15 });
   tracker.reconcile("please use tool", "");
   assert.equal(tracker.consumeSubmitted("please use tool")[0]?.name, "tool");
+});
+
+test("tracker preserves tags when the host trims submitted completion whitespace", () => {
+  const tracker = new ToolReferenceTracker();
+  tracker.add({ ...candidate, name: "github_mcp", kind: "mcp", start: 2, end: 12 });
+  tracker.reconcile("  github_mcp ", "");
+  const references = tracker.consumeSubmitted("github_mcp");
+  assert.equal(references.length, 1);
+  assert.equal(references[0]?.start, 0);
+  assert.equal(references[0]?.end, 10);
+  assert.equal(tracker.consumeSubmitted("github_mcp").length, 0);
 });
 
 test("render highlights an MCP tag without changing editor text", () => {

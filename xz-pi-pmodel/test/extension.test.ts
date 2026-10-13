@@ -7,6 +7,7 @@ import type { Model } from "@earendil-works/pi-ai";
 import type {
   ExtensionAPI,
   ExtensionCommandContext,
+  ExtensionContext,
   KeybindingsManager,
   Theme,
 } from "@earendil-works/pi-coding-agent";
@@ -63,7 +64,8 @@ type HarnessOptions = {
   beforeInput?: (input: string) => void;
   projectTrusted?: boolean;
   availableModels?: readonly Model<any>[];
-  onRefresh?: () => { aborted: boolean; errors: Map<string, Error> };
+  registeredProviders?: readonly string[];
+  onRefresh?: (refreshOptions?: { allowNetwork?: boolean; signal?: AbortSignal }) => { aborted: boolean; errors: Map<string, Error> };
 };
 
 function harness(customInput: string[], options: HarnessOptions = {}) {
@@ -78,18 +80,30 @@ function harness(customInput: string[], options: HarnessOptions = {}) {
     writeFileSync(path, JSON.stringify(data), "utf8");
   };
   write(join(agentDir, "settings.json"), options.globalSettings ?? { enabledModels: ["anthropic/sonnet"] });
+  write(join(agentDir, "auth.json"), Object.fromEntries((options.registeredProviders ?? ["anthropic", "copilot"]).map(id => [id, { type: "oauth" }])));
   if (options.projectSettings) write(join(cwd, ".pi", "settings.json"), options.projectSettings);
   const rendered: string[] = [];
   const notifications: Array<{ message: string; type?: string }> = [];
   const selected: Model<any>[] = [];
   const thinking: string[] = [];
   let reloaded = 0;
+  let synchronized = 0;
   let commandName = "";
   let command: ((args: string, ctx: ExtensionCommandContext) => Promise<void>) | undefined;
+  let shortcutKey = "";
+  let shortcut: ((ctx: ExtensionContext) => Promise<void>) | undefined;
   let sessionStart: ((_event: unknown, ctx: ExtensionCommandContext) => Promise<void>) | undefined;
   const registeredEvents: string[] = [];
 
+  const bus = new Map<string, Set<(data: unknown) => void>>();
   const pi = {
+    events: {
+      on(name: string, handler: (data: unknown) => void) {
+        const list = bus.get(name) ?? new Set(); list.add(handler); bus.set(name, list);
+        return () => list.delete(handler);
+      },
+      emit(name: string, data: unknown) { for (const handler of bus.get(name) ?? []) handler(data); },
+    },
     on(event: string, handler: (_event: unknown, ctx: ExtensionCommandContext) => Promise<void>) {
       registeredEvents.push(event);
       if (event === "session_start") sessionStart = handler;
@@ -98,6 +112,10 @@ function harness(customInput: string[], options: HarnessOptions = {}) {
     registerCommand(name: string, config: { handler: (args: string, ctx: ExtensionCommandContext) => Promise<void> }) {
       commandName = name;
       command = config.handler;
+    },
+    registerShortcut(key: string, config: { handler: (ctx: ExtensionContext) => Promise<void> }) {
+      shortcutKey = key;
+      shortcut = config.handler;
     },
     getSettings: () => ({ defaultProvider: "copilot", defaultModel: "gpt" }),
     getThinkingLevel: () => "high",
@@ -119,9 +137,17 @@ function harness(customInput: string[], options: HarnessOptions = {}) {
       getAvailable: () => options.availableModels ?? models,
       getAll: () => options.catalogModels ?? models,
       getError: () => options.catalogError,
-      async refresh() { return options.onRefresh?.() ?? { aborted: false, errors: new Map() }; },
+      getRegisteredProviderIds: () => options.registeredProviders ?? [
+        ...new Set((options.catalogModels ?? models).map((item) => item.provider)),
+      ],
+      async refresh(refreshOptions?: { allowNetwork?: boolean; signal?: AbortSignal }) {
+        return options.onRefresh?.(refreshOptions) ?? { aborted: false, errors: new Map() };
+      },
     },
     isProjectTrusted: () => options.projectTrusted ?? true,
+    sessionManager: {
+      getSessionFile: () => join(root, "session.jsonl"),
+    },
     ui: {
       notify(message: string, type?: string) { notifications.push({ message, ...(type ? { type } : {}) }); },
       async custom(factory: (tui: TUI, theme: Theme, keys: KeybindingsManager, done: (value: unknown) => void) => {
@@ -141,16 +167,29 @@ function harness(customInput: string[], options: HarnessOptions = {}) {
       },
     },
     async reload() { reloaded += 1; },
+    async switchSession(_sessionPath: string, switchOptions?: { withSession?: (fresh: ExtensionCommandContext) => Promise<void> }) {
+      synchronized += 1;
+      const global = JSON.parse(readFileSync(join(agentDir, "settings.json"), "utf8"));
+      const projectPath = join(cwd, ".pi", "settings.json");
+      const project = existsSync(projectPath) ? JSON.parse(readFileSync(projectPath, "utf8")) : {};
+      const patterns = project.enabledModels ?? global.enabledModels;
+      ctx.scopedModels = Array.isArray(patterns) && patterns.length > 0
+        ? models.filter((item) => patterns.includes(`${item.provider}/${item.id}`)).map((item) => ({ model: item }))
+        : [];
+      await switchOptions?.withSession?.(ctx);
+      return { cancelled: false };
+    },
   } as unknown as ExtensionCommandContext;
 
   return {
-    root, cwd, agentDir, commandName, command: command!, ctx, notifications, selected, thinking, rendered,
-    registeredEvents,
+    root, cwd, agentDir, commandName, command: command!, shortcutKey, shortcut: shortcut!, ctx,
+    notifications, selected, thinking, rendered, registeredEvents,
     async start() {
       assert.ok(sessionStart);
       await sessionStart({ type: "session_start" }, ctx);
     },
     get reloaded() { return reloaded; },
+    get synchronized() { return synchronized; },
     restore() {
       if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
       else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
@@ -170,15 +209,43 @@ test("v5.1 contract removes custom thinking APIs and layer shortcuts and updates
   assert.doesNotMatch(docs, /Ctrl\+T.*Open supported|Ctrl\+G.*Toggle|switches models and supported thinking levels/);
 });
 
-test("extension registers only /pmodel and selects through the public model API", async () => {
+test("extension registers /pmodel and Ctrl+Shift+E and selects through the public model API", async () => {
   const h = harness(["down", "enter"]);
   try {
     assert.equal(h.commandName, "pmodel");
+    assert.equal(h.shortcutKey, "ctrl+shift+e");
     assert.deepEqual(h.registeredEvents, ["session_start"]);
     await h.command("", h.ctx);
     assert.equal(h.selected[0]?.provider, "anthropic");
     assert.equal(h.selected[0]?.id, "sonnet");
     assert.equal(h.reloaded, 0);
+  } finally {
+    h.restore();
+  }
+});
+
+test("Ctrl+Shift+E opens the same picker and selects a model", async () => {
+  const h = harness(["down", "enter"]);
+  try {
+    await h.shortcut(h.ctx);
+    assert.equal(h.selected[0]?.provider, "anthropic");
+    assert.equal(h.selected[0]?.id, "sonnet");
+    assert.equal(h.reloaded, 0);
+  } finally {
+    h.restore();
+  }
+});
+
+test("shortcut saves default changes and asks for /reload instead of using command-only APIs", async () => {
+  const h = harness(["down", "right", " ", "escape"]);
+  try {
+    await h.shortcut(h.ctx);
+    const settings = JSON.parse(readFileSync(join(h.agentDir, "settings.json"), "utf8"));
+    assert.equal(settings.defaultProvider, "anthropic");
+    assert.equal(settings.defaultModel, "sonnet");
+    assert.equal(h.reloaded, 0);
+    assert.match(h.notifications.at(-1)?.message ?? "", /Run \/reload/);
+    assert.equal(h.notifications.at(-1)?.type, "warning");
   } finally {
     h.restore();
   }
@@ -252,9 +319,9 @@ test("v5.1 inline earlier saved defaults still reload when a later model action 
   const h = harness(["down", "right", " ", "left", "enter"], options);
   try {
     await h.command("", h.ctx);
-    assert.equal(JSON.parse(readFileSync(join(h.agentDir, "settings.json"), "utf8")).defaultModel, "sonnet");
+    assert.equal(JSON.parse(readFileSync(join(h.agentDir, "settings.json"), "utf8")).defaultModel, undefined);
     assert.deepEqual(h.selected, []);
-    assert.ok(h.notifications.some((notice) => /removed while the picker was open/.test(notice.message)));
+    assert.ok(h.notifications.some((notice) => /deleted; choose a new model|removed while the picker was open/.test(notice.message)));
     assert.equal(h.reloaded, 1);
   } finally { h.restore(); }
 });
@@ -294,38 +361,69 @@ test("authentication failure reports an error and does not change thinking", asy
   }
 });
 
-test("all Enter persists global scoped membership without model/thinking/default changes or reload", async () => {
+test("all keeps membership as a draft until Ctrl+S, then saves and synchronizes the current session", async () => {
   const initial = {
     enabledModels: ["anthropic/sonnet"], defaultProvider: "anthropic", defaultModel: "sonnet",
     modelThinkingLevels: { "anthropic/sonnet": "high" }, custom: { keep: true },
   };
-  const h = harness(["tab", "down", "enter", "escape"], {
+  const h = harness(["tab", "down", "enter", "save"], {
     globalSettings: initial,
-    projectSettings: { enabledModels: ["anthropic/sonnet"], defaultProvider: "copilot", defaultModel: "gpt" },
   });
   try {
-    const projectPath = join(h.cwd, ".pi", "settings.json");
-    const before = readFileSync(projectPath, "utf8");
     await h.command("gpt", h.ctx);
-    assert.deepEqual(JSON.parse(readFileSync(join(h.agentDir, "settings.json"), "utf8")), {
-      ...initial, enabledModels: ["anthropic/sonnet", "copilot/gpt"],
-    });
-    assert.equal(readFileSync(projectPath, "utf8"), before);
+    const { enabledModels: _enabledModels, ...unrestricted } = initial;
+    assert.deepEqual(JSON.parse(readFileSync(join(h.agentDir, "settings.json"), "utf8")), unrestricted);
     assert.deepEqual(h.selected, []);
     assert.deepEqual(h.thinking, []);
     assert.equal(h.reloaded, 0);
-    assert.match(h.notifications.at(-1)?.message ?? "", /Restart Pi.*reload is not enough/);
-    assert.match(h.notifications.at(-1)?.message ?? "", /Project enabledModels/);
+    assert.equal(h.synchronized, 1);
+    assert.match(h.notifications.at(-1)?.message ?? "", /saved and synchronized/);
     assert.ok(h.rendered.some((text) => /✓ .*gpt/.test(text)));
-    assert.equal(h.ctx.scopedModels.length, 1);
+    assert.equal(h.ctx.scopedModels.length, 0);
   } finally {
     h.restore();
   }
 });
 
-test("all removal and forbidden shortcuts cannot alter defaults, preferences or the current model", async () => {
+test("all retains and reports a configured account model that remains unavailable after synchronization", async () => {
+  const initial = { enabledModels: ["anthropic/sonnet", "openai-xuzan/gpt-5.6-sol"] };
+  const h = harness(["tab", "save"], {
+    globalSettings: initial,
+    registeredProviders: ["anthropic", "copilot", "openai-xuzan"],
+  });
+  try {
+    await h.command("", h.ctx);
+    assert.deepEqual(JSON.parse(readFileSync(join(h.agentDir, "settings.json"), "utf8")), { enabledModels: ["anthropic/sonnet"] });
+    assert.equal(h.synchronized, 1);
+    assert.match(h.notifications[0]?.message ?? "", /Cleaned global enabledModels.*openai-xuzan\/gpt-5\.6-sol/);
+    assert.equal(h.notifications[0]?.type, "warning");
+  } finally {
+    h.restore();
+  }
+});
+
+test("all warns when project enabledModels overrides the saved global draft", async () => {
+  const projectSettings = { enabledModels: ["anthropic/sonnet"], custom: true };
+  const h = harness(["tab", "down", "enter", "save"], {
+    globalSettings: { enabledModels: ["anthropic/sonnet"] },
+    projectSettings,
+  });
+  try {
+    await h.command("gpt", h.ctx);
+    assert.deepEqual(JSON.parse(readFileSync(join(h.agentDir, "settings.json"), "utf8")), {});
+    assert.deepEqual(JSON.parse(readFileSync(join(h.cwd, ".pi", "settings.json"), "utf8")), projectSettings);
+    assert.equal(h.synchronized, 1);
+    assert.equal(h.ctx.scopedModels.length, 1);
+    assert.match(h.notifications.at(-1)?.message ?? "", /project enabledModels.*controls this session/);
+    assert.equal(h.notifications.at(-1)?.type, "warning");
+  } finally {
+    h.restore();
+  }
+});
+
+test("all removal saves only on Ctrl+S and unrelated shortcuts cannot alter defaults or preferences", async () => {
   const initial = { enabledModels: ["anthropic/sonnet", "copilot/gpt"], defaultProvider: "anthropic", defaultModel: "sonnet" };
-  const h = harness(["tab", "down", "enter", "save", "thinking", "hidden", "alt-down", "\u0007", "\u0018", "\u0012", "escape"], {
+  const h = harness(["tab", "down", "enter", "thinking", "hidden", "alt-down", "\u0007", "\u0018", "\u0012", "save"], {
     globalSettings: initial,
   });
   try {
@@ -336,6 +434,7 @@ test("all removal and forbidden shortcuts cannot alter defaults, preferences or 
     assert.deepEqual(h.selected, []);
     assert.deepEqual(h.thinking, []);
     assert.equal(h.reloaded, 0);
+    assert.equal(h.synchronized, 1);
   } finally {
     h.restore();
   }
@@ -365,6 +464,50 @@ test("last scoped removal is rejected without a success message or any API chang
   } finally {
     h.restore();
   }
+});
+
+test("persisted alias metadata cannot keep a provider that is missing from auth", async () => {
+  const initial = { enabledModels: ["anthropic/sonnet", "openai-work/gpt", "deleted/model"] };
+  const projectSettings = { defaultProvider: "openai-work", defaultModel: "gpt", modelThinkingLevels: { "openai-work/gpt": "high" }, custom: true };
+  const options: HarnessOptions = { globalSettings: initial, projectSettings };
+  const h = harness(["escape"], options);
+  try {
+    const accountDir = join(h.agentDir, "config", "xz-pi-login");
+    mkdirSync(accountDir, { recursive: true });
+    writeFileSync(join(accountDir, "accounts.json"), JSON.stringify({ version: 1, accounts: { "openai-work": { base: "openai", suffix: "work" } } }));
+    await h.start();
+    assert.deepEqual(JSON.parse(readFileSync(join(h.agentDir, "settings.json"), "utf8")), { enabledModels: ["anthropic/sonnet"] });
+    assert.deepEqual(JSON.parse(readFileSync(join(h.cwd, ".pi", "settings.json"), "utf8")), { custom: true });
+    await h.command("", h.ctx);
+    assert.deepEqual(JSON.parse(readFileSync(join(h.agentDir, "settings.json"), "utf8")), { enabledModels: ["anthropic/sonnet"] });
+    assert.ok(h.notifications.every((notice) => !/account.*not.*registered/i.test(notice.message)));
+    assert.equal(h.reloaded, 1);
+    assert.deepEqual(h.selected, []);
+
+    // A model registration alone cannot restore a provider without auth.json membership.
+    options.catalogModels = [model("anthropic", "sonnet"), model("copilot", "gpt"), model("openai-work", "gpt")];
+    options.availableModels = options.catalogModels;
+    await h.start();
+    assert.deepEqual(JSON.parse(readFileSync(join(h.agentDir, "settings.json"), "utf8")).enabledModels, ["anthropic/sonnet"]);
+    assert.equal(JSON.parse(readFileSync(join(h.cwd, ".pi", "settings.json"), "utf8")).defaultProvider, undefined);
+  } finally { h.restore(); }
+});
+
+test("malformed account registration metadata skips destructive maintenance", async () => {
+  const initial = { enabledModels: ["anthropic/sonnet", "openai-work/gpt"] };
+  const h = harness([], { globalSettings: initial, projectSettings: { defaultProvider: "openai-work", defaultModel: "gpt" } });
+  try {
+    const accountDir = join(h.agentDir, "config", "xz-pi-login");
+    mkdirSync(accountDir, { recursive: true });
+    const path = join(accountDir, "accounts.json");
+    for (const content of ["not JSON", JSON.stringify({ version: 1, accounts: { "openai-work": { base: "openai", suffix: "different" } } })]) {
+      writeFileSync(path, content);
+      await h.start();
+      assert.deepEqual(JSON.parse(readFileSync(join(h.agentDir, "settings.json"), "utf8")), { enabledModels: ["anthropic/sonnet"] });
+      assert.equal(JSON.parse(readFileSync(join(h.cwd, ".pi", "settings.json"), "utf8")).defaultProvider, undefined);
+      assert.equal(readFileSync(path, "utf8"), content);
+    }
+  } finally { h.restore(); }
 });
 
 test("session_start cleans global stale references once without changing project/default/model/thinking state", async () => {
@@ -402,8 +545,39 @@ test("startup cleanup uses the full catalog rather than the authentication-filte
   });
   try {
     await h.start();
-    assert.deepEqual(JSON.parse(readFileSync(join(h.agentDir, "settings.json"), "utf8")).enabledModels, ["offline/large"]);
+    assert.equal(JSON.parse(readFileSync(join(h.agentDir, "settings.json"), "utf8")).enabledModels, undefined);
     assert.ok(!h.ctx.modelRegistry.getAvailable().some((model) => model.provider === "offline"));
+  } finally {
+    h.restore();
+  }
+});
+
+test("startup retains a configured dynamic account while its registered provider catalog is empty", async () => {
+  const initial = { enabledModels: ["anthropic/sonnet", "openai-xuzan/gpt-5.6-sol"] };
+  const h = harness([], {
+    globalSettings: initial,
+    registeredProviders: ["anthropic", "copilot", "openai-xuzan"],
+  });
+  try {
+    await h.start();
+    assert.deepEqual(JSON.parse(readFileSync(join(h.agentDir, "settings.json"), "utf8")), { enabledModels: ["anthropic/sonnet"] });
+    assert.ok(h.notifications.some((notice) => /openai-xuzan/.test(notice.message)));
+  } finally {
+    h.restore();
+  }
+});
+
+test("startup removes a withdrawn model from an otherwise available provider", async () => {
+  const h = harness([], {
+    globalSettings: { enabledModels: ["anthropic/sonnet", "anthropic/withdrawn", "copilot/gpt"] },
+    catalogModels: [model("anthropic", "sonnet"), model("anthropic", "withdrawn"), model("copilot", "gpt")],
+  });
+  try {
+    await h.start();
+    assert.deepEqual(JSON.parse(readFileSync(join(h.agentDir, "settings.json"), "utf8")).enabledModels, [
+      "anthropic/sonnet", "copilot/gpt",
+    ]);
+    assert.match(h.notifications[0]?.message ?? "", /Cleaned global enabledModels.*anthropic\/withdrawn/);
   } finally {
     h.restore();
   }
@@ -415,8 +589,8 @@ test("startup skips empty/error catalogs and preserves their references", async 
     const h = harness([], { ...options, globalSettings: initial });
     try {
       await h.start();
-      assert.deepEqual(JSON.parse(readFileSync(join(h.agentDir, "settings.json"), "utf8")), initial);
-      assert.match(h.notifications[0]?.message ?? "", /cleanup skipped/);
+      assert.deepEqual(JSON.parse(readFileSync(join(h.agentDir, "settings.json"), "utf8")), options.catalogError ? initial : {});
+      assert.match(h.notifications[0]?.message ?? "", options.catalogError ? /cleanup skipped/ : /Cleaned global enabledModels/);
       assert.deepEqual(h.selected, []);
     } finally {
       h.restore();
@@ -440,7 +614,7 @@ test("opening pmodel cleans stale references before building its global scoped c
 });
 
 test("saving all membership cleans references added while the selector was open", async () => {
-  const h = harness(["tab", "down", "enter", "escape"], {
+  const h = harness(["tab", "down", "enter", "save"], {
     beforeInput(input) {
       if (input === "enter") {
         writeFileSync(join(h.agentDir, "settings.json"), JSON.stringify({
@@ -451,9 +625,7 @@ test("saving all membership cleans references added while the selector was open"
   });
   try {
     await h.command("gpt", h.ctx);
-    assert.deepEqual(JSON.parse(readFileSync(join(h.agentDir, "settings.json"), "utf8")), {
-      enabledModels: ["anthropic/sonnet", "copilot/gpt"], custom: true,
-    });
+    assert.deepEqual(JSON.parse(readFileSync(join(h.agentDir, "settings.json"), "utf8")), { custom: true });
     assert.ok(h.notifications.some((notice) => /Cleaned global enabledModels/.test(notice.message)));
     assert.deepEqual(h.selected, []);
     assert.deepEqual(h.thinking, []);
@@ -522,7 +694,7 @@ test("startup migrates legacy sorting and restores stale local visibility while 
     assert.deepEqual(JSON.parse(readFileSync(join(h.agentDir, "xz-pi-pmodel.json"), "utf8")), {
       version: 1, providers: { anthropic: { modelOrder: ["sonnet"] } },
     });
-    assert.deepEqual(JSON.parse(readFileSync(preferences, "utf8")), { version: 1, migrations: { projectThinkingDefaultsRemoved: true } });
+    assert.deepEqual(JSON.parse(readFileSync(preferences, "utf8")), { version: 1, providers: { anthropic: { visibleModels: [] } }, migrations: { projectThinkingDefaultsRemoved: true } });
     assert.equal(readFileSync(join(h.cwd, ".pi", "settings.json"), "utf8"), before);
     assert.equal(h.reloaded, 0);
     assert.deepEqual(h.selected, []);
@@ -579,6 +751,23 @@ test("untrusted project preferences/defaults cannot override globals or be autom
     assert.equal(readFileSync(join(h.cwd, ".pi", "settings.json"), "utf8"), before);
     assert.ok(h.rendered.some((rendered) => /global default.*gpt/.test(rendered)));
     assert.equal(h.reloaded, 0);
+  } finally {
+    h.restore();
+  }
+});
+
+test("picker refreshes dynamic model catalogs with the official network policy", async () => {
+  let refreshOptions: { allowNetwork?: boolean; signal?: AbortSignal } | undefined;
+  const h = harness(["escape"], {
+    onRefresh(options) {
+      refreshOptions = options;
+      return { aborted: false, errors: new Map() };
+    },
+  });
+  try {
+    await h.command("", h.ctx);
+    assert.equal(refreshOptions?.allowNetwork, true);
+    assert.ok(refreshOptions?.signal instanceof AbortSignal);
   } finally {
     h.restore();
   }

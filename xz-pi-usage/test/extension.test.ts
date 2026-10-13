@@ -39,6 +39,17 @@ test("footer shows only the selected provider and never falls back to Copilot", 
   assert.equal(formatFooter(snapshots, undefined), undefined);
 });
 
+test("OpenAI alias footer labels the provider id and its mapped weekly quota directly", () => {
+  const now = Date.UTC(2026, 8, 28, 12);
+  const openai: UsageSnapshot = {
+    providerId: "openai-xuzan", name: "OpenAI xuzan", status: "ok", verified: true,
+    windows: [{ label: "7d", usedPercent: 28, resetAt: now + 6 * 86_400_000 }],
+    credits: [], fetchedAt: now,
+  };
+  assert.equal(formatFooter([openai], openai.providerId, now), "openai-xuzan: wk72% 6d0h");
+  assert.equal(formatFooter([{ ...openai, status: "unsupported" }], openai.providerId, now), undefined);
+});
+
 test("footer abbreviates weekly remaining quota, reset time, and reset credits", () => {
   const now = Date.UTC(2026, 8, 28, 12);
   const weekly: UsageSnapshot = {
@@ -48,6 +59,7 @@ test("footer abbreviates weekly remaining quota, reset time, and reset credits",
   };
   assert.equal(formatFooter([weekly], weekly.providerId, now), "◎p wk95% 6d0h · ↻3");
   assert.equal(formatFooter([{ ...weekly, providerId: "openai-codex-work", name: "Codex work" }], "openai-codex-work", now), "◎w wk95% 6d0h · ↻3");
+  assert.equal(formatFooter([{ ...weekly, providerId: "openai-codex-xuzan", name: "Codex xuzan" }], "openai-codex-xuzan", now), "◎xuzan wk95% 6d0h · ↻3");
   assert.equal(formatFooter([{ ...weekly, windows: [{ label: "7d", usedPercent: 100, resetAt: now }] }], weekly.providerId, now), "◎p wk0% 0m · ↻3");
   assert.equal(formatFooter([{ ...weekly, windows: [{ label: "5h", usedPercent: 0 }] }], weekly.providerId, now), "◎p 5h100% · ↻3");
   assert.equal(formatFooter([{ ...weekly, status: "network" }], weekly.providerId, now), undefined);
@@ -97,7 +109,10 @@ test("extension shows cached status, refreshes every five minutes, and clears on
   let entry: { snapshots: UsageSnapshot[]; authOrder: string[] } | undefined;
   const pi = {
     events: {
-      on: (name: string, handler: (data: unknown) => void) => { events.set(name, handler); },
+      on: (name: string, handler: (data: unknown) => void) => {
+        events.set(name, handler);
+        return () => { if (events.get(name) === handler) events.delete(name); };
+      },
       emit: (name: string, data: unknown) => {
         if (name === "xz-pi-usage:refresh-result") results.push(data);
         events.get(name)?.(data);
@@ -115,13 +130,22 @@ test("extension shows cached status, refreshes every five minutes, and clears on
     },
   } as unknown as ExtensionAPI;
   const statuses: Array<string | undefined> = [];
+  const statusColors: string[] = [];
+  const footers: unknown[] = [];
   const ctx = {
     hasUI: true,
+    mode: "tui",
     model: { provider: "openai-codex-personal" },
     modelRegistry: { getProviderAuth: async () => undefined },
     ui: {
-      theme: { fg: (_color: string, text: string) => text },
+      theme: {
+        fg: (color: string, text: string) => {
+          statusColors.push(color);
+          return text;
+        },
+      },
       setStatus: (_key: string, text: string | undefined) => statuses.push(text),
+      setFooter: (factory: unknown) => footers.push(factory),
     },
   } as unknown as ExtensionContext;
   let intervalMs = 0;
@@ -139,6 +163,7 @@ test("extension shows cached status, refreshes every five minutes, and clears on
 
   await handlers.get("session_start")?.({}, ctx);
   assert.equal(intervalMs, 300_000);
+  assert.equal(typeof footers[0], "function");
   assert.match(statuses[0] ?? "", /^◎p 5h7%/);
   assert.doesNotMatch(statuses[0] ?? "", /Copilot/);
   ctx.model!.provider = "github-copilot";
@@ -169,4 +194,6 @@ test("extension shows cached status, refreshes every five minutes, and clears on
   assert.equal(results.length, 2);
   assert.equal(cleared, true);
   assert.equal(statuses.at(-1), undefined);
+  assert.equal(footers.at(-1), undefined);
+  assert.ok(statusColors.every((color) => color === "text"));
 });

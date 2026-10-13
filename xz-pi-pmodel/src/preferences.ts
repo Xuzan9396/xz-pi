@@ -278,6 +278,34 @@ export function migrateProjectOrdering(
   return { migrated, cleared };
 }
 
+export function cleanupAuthenticatedPreferences(
+  paths: PreferencePaths,
+  catalogModels: readonly Model<any>[],
+  providerIds: readonly string[],
+  options: { projectTrusted: boolean },
+): string[] {
+  const authenticated = new Set(providerIds);
+  const known = new Set(catalogModels.map(model => `${model.provider}/${model.id}`));
+  const removed: string[] = [];
+  for (const layer of (["global", "project"] as const)) {
+    if (layer === "project" && !options.projectTrusted) continue;
+    const path = paths[layer];
+    if (!existsSync(path)) continue;
+    const preferences = readPreferenceFile(path);
+    const before = JSON.stringify(preferences);
+    if (preferences.providerOrder) preferences.providerOrder = preferences.providerOrder.filter(provider => {
+      if (authenticated.has(provider)) return true; removed.push(`${layer}:${provider}`); return false;
+    });
+    for (const [provider, values] of Object.entries(preferences.providers ?? {})) {
+      if (!authenticated.has(provider)) { delete preferences.providers![provider]; removed.push(`${layer}:${provider}`); continue; }
+      if (values.modelOrder) values.modelOrder = values.modelOrder.filter(id => known.has(`${provider}/${id}`));
+      if (values.visibleModels) values.visibleModels = values.visibleModels.filter(id => known.has(`${provider}/${id}`));
+    }
+    if (JSON.stringify(preferences) !== before) persistPreferences(path, preferences);
+  }
+  return [...new Set(removed)];
+}
+
 export function cleanupProjectVisibility(
   paths: PreferencePaths,
   catalogModels: readonly Model<any>[],

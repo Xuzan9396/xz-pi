@@ -50,9 +50,35 @@ test("cleanup removes the reported deleted models from global enabledModels only
 test("complete catalog models are retained even when their provider lacks authentication", async (t) => {
   const f = fixture(t);
   f.write(f.paths.global, { enabledModels: ["offline/large:high", "deleted/model", "a/sonnet"] });
-  const result = await cleanupGlobalScopedModels(f.paths, [...catalog, model("offline", "large")]);
+  const result = await cleanupGlobalScopedModels(
+    f.paths,
+    [...catalog, model("offline", "large")],
+    { availableModels: catalog },
+  );
   assert.deepEqual(result.removedPatterns, ["deleted/model"]);
   assert.deepEqual(JSON.parse(readFileSync(f.paths.global, "utf8")).enabledModels, ["offline/large:high", "a/sonnet"]);
+});
+
+test("registered dynamic providers with a temporarily empty catalog are retained", async (t) => {
+  const f = fixture(t);
+  f.write(f.paths.global, { enabledModels: ["openai-xuzan/gpt-5.6-sol", "deleted/model", "a/sonnet"] });
+  const result = await cleanupGlobalScopedModels(f.paths, catalog, {
+    availableModels: catalog,
+    registeredProviders: ["a", "b", "openai-xuzan"],
+  });
+  assert.deepEqual(result.removedPatterns, ["deleted/model"]);
+  assert.deepEqual(JSON.parse(readFileSync(f.paths.global, "utf8")).enabledModels, [
+    "openai-xuzan/gpt-5.6-sol", "a/sonnet",
+  ]);
+});
+
+test("known models withdrawn from an otherwise available provider are removed", async (t) => {
+  const f = fixture(t);
+  const complete = [...catalog, model("a", "withdrawn")];
+  f.write(f.paths.global, { enabledModels: ["a/sonnet", "a/withdrawn", "b/gpt"] });
+  const result = await cleanupGlobalScopedModels(f.paths, complete, { availableModels: catalog });
+  assert.deepEqual(result.removedPatterns, ["a/withdrawn"]);
+  assert.deepEqual(JSON.parse(readFileSync(f.paths.global, "utf8")).enabledModels, ["a/sonnet", "b/gpt"]);
 });
 
 test("cleanup preserves unmatched globs, braces, extglobs, bare aliases and incomplete references", async (t) => {

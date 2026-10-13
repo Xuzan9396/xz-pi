@@ -19,7 +19,7 @@ export function formatReset(resetAt: number | undefined, now = Date.now()): stri
 
 export function formatWindow(window: UsageWindow, now = Date.now()): string {
   const reset = formatReset(window.resetAt, now);
-  const label = clean(window.label, 24).replace(/^7d(?=\s|$)/, "week");
+  const label = clean(window.label, 24).replace(/(^|·)7d(?=\s|$)/, "$1week");
   const remainingPercent = Math.round(100 - window.usedPercent);
   return `${label} ${remainingPercent}%${reset ? ` · ${reset}` : ""}`;
 }

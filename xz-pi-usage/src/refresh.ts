@@ -1,4 +1,6 @@
+import { baseProviderId, type AccountAliases } from "./account-aliases.js";
 import { readUsageCache, writeUsageCache, type UsageCache } from "./cache.js";
+import { snapshot } from "./http.js";
 import { withUsageLock } from "./lock.js";
 import { providerIdsFor, resolveProviderAdapter } from "./providers/index.js";
 import type { ProviderDeps, UsageContext, UsageSnapshot } from "./types.js";
@@ -8,6 +10,7 @@ export const REFRESH_INTERVAL_MS = 5 * 60_000;
 export interface RefreshOptions extends ProviderDeps {
   force?: boolean;
   providerIds?: readonly string[];
+  aliases?: AccountAliases;
   now?: () => number;
   fetchSnapshot?: (ctx: UsageContext, providerId: string, deps: ProviderDeps) => Promise<UsageSnapshot>;
 }
@@ -19,9 +22,17 @@ export function isFresh(cache: UsageCache | undefined, now = Date.now()): cache 
 }
 
 async function defaultFetch(ctx: UsageContext, providerId: string, deps: ProviderDeps): Promise<UsageSnapshot> {
-  const adapter = resolveProviderAdapter(providerId);
-  if (!adapter) throw new Error("unsupported provider");
-  return adapter.fetch(ctx, providerId, deps);
+  const adapter = resolveProviderAdapter(deps.baseProviderId ?? providerId);
+  if (!adapter) {
+    return snapshot(providerId, providerId, true, deps.now?.() ?? Date.now(), {
+      status: "unsupported",
+      detail: "暂无可用的订阅额度查询接口",
+    });
+  }
+  const result = await adapter.fetch(ctx, providerId, deps);
+  return deps.accountAliasSuffix
+    ? { ...result, name: `${adapter.name} ${deps.accountAliasSuffix}` }
+    : result;
 }
 
 function hasProviderSet(cache: UsageCache, providerIds: readonly string[]): boolean {
@@ -35,10 +46,15 @@ async function refreshLocked(ctx: UsageContext, options: RefreshOptions, provide
     const cached = await readUsageCache();
     if (!options.force && isFresh(cached, now()) && hasProviderSet(cached, providerIds)) return cached;
     const fetchSnapshot = options.fetchSnapshot ?? defaultFetch;
+    const companionProviderIds = providerIds.filter((providerId) =>
+      resolveProviderAdapter(providerId, options.aliases)?.id === "openai-codex");
     const snapshots: UsageSnapshot[] = [];
     for (const providerId of providerIds) {
       snapshots.push(await fetchSnapshot(ctx, providerId, {
         now,
+        baseProviderId: baseProviderId(providerId, options.aliases),
+        companionProviderIds,
+        ...(options.aliases?.[providerId]?.suffix ? { accountAliasSuffix: options.aliases[providerId].suffix } : {}),
         ...(options.readCredential ? { readCredential: options.readCredential } : {}),
       }));
     }

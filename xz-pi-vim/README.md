@@ -28,12 +28,14 @@ pi install /Users/admin/go/tmp_xz/xz-pi-vim
 - `V-LINE`：整行选区。
 - `EX`：执行退出、Pi slash command 或 shell command。
 - INSERT 模式支持在行中空白后输入 `/`，立即模糊匹配 Pi 命令。
+- Pi 扩展快捷键（如 BTW 焦点切换）在待续 `g`、`d/c/y` 以及 EX 模式中同样转发，不吞键、不清空待续命令。
 
 ## 单轮工作时长
 
 用户提交 interactive 或 RPC 请求后，输入框底边右侧会从 `⏱ working 0秒` 开始计时，并每秒更新；计时标签显示在 Vim 模式标签左侧。流式期间追加 steer/followUp 会作为新请求重新计时；AI 完全 settled 后冻结最终时长，直到下一次请求。
 
 不足 1 分钟显示 `N秒`，不足 1 小时显示 `N分钟N秒`，达到 1 小时显示 `N小时N分钟N秒`。窄终端会优先保留 Vim 模式标签，空间不足时隐藏 working 计时标签。
+
 
 ## 首版按键
 
@@ -90,10 +92,12 @@ URL 和已包含后续 `/` 的路径不会作为行中命令 token 匹配。关�
 
 ### Tool / MCP Tag 引用
 
-INSERT 模式下输入 `$` 可模糊搜索 Pi 当前注册的工具/MCP，以及全局或当前可信项目中启用的 Package。空查询和搜索结果始终按 MCP → Package → Tool 排序：
+INSERT 模式下输入 `$` 可模糊搜索启用的 MCP Server、Pi 当前注册的工具，以及全局或当前可信项目中启用的 Package。NORMAL 模式的 `$` 仍然是 Vim 行尾移动。空查询和搜索结果始终按 MCP → Package → Tool 排序：
 
 ```text
-◆ context7_mcp       MCP · 2 tools
+◆ context7_mcp       MCP · 2 tools · cached
+◆ github_mcp         MCP · enabled · not-connected
+◇ pi-mcp-adapter     PACKAGE · 2 tools
 ◇ xz-pi-websearch    PACKAGE · 2 tools
 · web_search         TOOL · Search the web
 ```
@@ -102,11 +106,13 @@ INSERT 模式下输入 `$` 可模糊搜索 Pi 当前注册的工具/MCP，以及
 帮我用 $context
 ```
 
-选择 MCP、Package 或具体 Tool 后，`$context` 会替换成对应名称的彩色 Tag。`$` 和列表图标只是触发/显示符，不会保留或提交给模型。MCP Tag 关联该 Server 下的工具，Package Tag 关联该包注册的工具，Tool Tag 只关联单个工具。
+选择 MCP、Package 或具体 Tool 后，`$context` 会替换成对应名称的彩色 Tag。`$` 和列表图标只是触发/显示符，不会保留或提交给模型。MCP Tag 关联该 Server 下已注册的工具；未注册代理的惰性 Server 关联已有 `mcp` 网关，不虚构工具。Package Tag 关联该包注册的工具，Tool Tag 只关联单个工具。
 
 Tag 是原子编辑单元：在 Tag 内或边缘使用 Backspace、Delete、`x`、`X`、`d`、`c` 或 Visual 删除时会删除整个 Tag。在 Tag 内插入字符会令其退化为普通文本。复制得到的是不含颜色控制符的纯名称。
 
-提交时，仍存在的 Tag 所关联工具会按配置自动启用，并提示模型在适合时优先使用；工具不会被强制直接调用。MCP/Tool 目录从 `pi.getAllTools().sourceInfo` 聚合。Package 额外合并全局和项目配置：任一作用域启用就展示，同名包去重，两边均关闭则不从配置添加。没有注册 Tool 的包（如 `xz-pi-vim`、`xz-pi-btw`）也会显示为 `enabled package`，选择后只添加引用，不执行命令或虚构工具。未信任项目的配置不参与；配置修改后执行 `/reload` 刷新。
+提交时，仍存在的 Tag 所关联工具会按配置自动启用，并提示模型在适合时优先使用；工具不会被强制直接调用。提交时会重新核验目录，选择后被禁用的 MCP 不会重新启用；Pi 去除提交首尾空白不会导致 Tag 丢失。
+
+Tool 目录来自 `pi.getAllTools()`，过滤 hidden 工具；原生 MCP 使用 namespace/source 元数据聚合。加载 `pi-mcp-adapter` 时，MCP 目录实时读取其公开 `pi-mcp-adapter/status/v1` 状态事件：显示启用但尚未连接/缓存的 Server，排除 disabled/blocked，工具数采用元数据计数而非代理包装数量。`not-connected` 且计数未知时不显示误导性的 `0 tools`。适配器本身只显示为 Package/Tool，不是假 MCP Server。补全不读取 MCP 凭据、不主动联网连接；首次真正调用时才由适配器处理惰性连接。未提供该状态接口的适配器版本回退到已注册工具目录。 Package 额外合并全局和项目配置：任一作用域启用就展示，同名包去重，两边均关闭则不从配置添加。没有注册 Tool 的包（如 `xz-pi-vim`、`xz-pi-btw`）也会显示为 `enabled package`，选择后只添加引用，不执行命令或虚构工具。未信任项目的配置不参与；配置修改后执行 `/reload` 刷新。
 
 ### EX
 

@@ -1,0 +1,54 @@
+{
+  "name": "xz-pi-login",
+  "version": "0.1.0",
+  "description": "Named auth-backed native-provider logins for Pi",
+  "type": "module",
+  "exports": "./index.ts",
+  "main": "./index.ts",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "multi-account",
+    "login"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Xuzan9396/xz-pi.git",
+    "directory": "xz-pi-login"
+  },
+  "homepage": "https://github.com/Xuzan9396/xz-pi/tree/main/xz-pi-login",
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "files": [
+    "index.ts",
+    "lib/",
+    "README.md",
+    "CHANGELOG.md",
+    "UPSTREAM.md",
+    "ARCHITECTURE.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node --import ./tests/host-modules.mjs --test tests/*.test.mjs",
+    "check": "npm test"
+  },
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": ">=1.1.0",
+    "@earendil-works/pi-coding-agent": ">=1.1.0"
+  },
+  "dependencies": {
+    "@bufbuild/protobuf": "2.16.0",
+    "proper-lockfile": "4.1.2"
+  }
+}

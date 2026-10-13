@@ -1,7 +1,7 @@
 {
   "name": "xz-pi-btw",
   "version": "0.1.1",
-  "description": "Ephemeral /btw side questions for Pi using the current session context",
+  "description": "Parallel Pi sub-sessions with a large, scrollable BTW overlay and native text selection",
   "type": "module",
   "keywords": [
     "pi-package",
@@ -21,34 +21,35 @@
     "provenance": true
   },
   "files": [
-    "index.ts",
-    "src",
+    "extensions",
+    "skills",
     "README.md",
+    "UPSTREAM.md",
+    "CHANGELOG.md",
     "LICENSE"
   ],
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "node --import tsx/esm --test 'test/**/*.test.ts'",
+    "test": "vitest --run",
     "check": "npm run typecheck && npm test"
   },
   "pi": {
     "extensions": [
-      "./index.ts"
-    ]
+      "./extensions/btw.ts"
+    ],
+    "skills": ["./skills"]
   },
   "peerDependencies": {
-    "@earendil-works/pi-agent-core": "*",
-    "@earendil-works/pi-ai": "*",
-    "@earendil-works/pi-coding-agent": "*",
-    "@earendil-works/pi-tui": ">=0.84.4"
+    "@earendil-works/pi-ai": ">=0.85.1 <2",
+    "@earendil-works/pi-coding-agent": ">=0.85.1 <2",
+    "@earendil-works/pi-tui": ">=0.85.1 <2"
   },
   "devDependencies": {
-    "@earendil-works/pi-agent-core": "0.84.4",
-    "@earendil-works/pi-ai": "0.84.4",
-    "@earendil-works/pi-coding-agent": "0.84.4",
-    "@earendil-works/pi-tui": "0.84.4",
+    "@earendil-works/pi-ai": "1.1.0",
+    "@earendil-works/pi-coding-agent": "1.1.0",
+    "@earendil-works/pi-tui": "1.1.0",
     "@types/node": "^22.0.0",
-    "tsx": "^4.20.0",
-    "typescript": "^5.9.0"
+    "typescript": "^6.0.2",
+    "vitest": "^4.1.11"
   }
 }

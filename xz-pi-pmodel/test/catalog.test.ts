@@ -47,7 +47,7 @@ test("v5.1 defaults catalog marks and searches both defaults even with a project
   assert.ok(two.searchFields.includes("default"));
 });
 
-test("catalog groups, orders, hides, and retains unavailable configured ids", () => {
+test("catalog groups and orders only providers present in the supplied auth-backed models", () => {
   const groups = buildProviderGroups(
     [model("anthropic", "sonnet"), model("anthropic", "opus"), model("copilot", "gpt")],
     [],
@@ -62,12 +62,11 @@ test("catalog groups, orders, hides, and retains unavailable configured ids", ()
     { current: { provider: "anthropic", id: "sonnet" }, defaults: { global: { provider: "copilot", id: "gpt" } } },
   );
 
-  assert.deepEqual(groups.map((group) => group.provider), ["copilot", "anthropic", "offline"]);
+  assert.deepEqual(groups.map((group) => group.provider), ["copilot", "anthropic"]);
   const anthropic = groups[1]!;
   assert.deepEqual(anthropic.models.map((item) => item.id), ["opus", "retired", "sonnet"]);
   assert.deepEqual(anthropic.visibleModels.map((item) => item.id), ["sonnet"]);
   assert.equal(anthropic.models[1]!.available, false);
   assert.equal(anthropic.models[2]!.current, true);
   assert.equal(groups[0]!.models[0]!.default, true);
-  assert.equal(groups[2]!.hiddenModels[0]!.id, "missing");
 });

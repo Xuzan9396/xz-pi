@@ -1,7 +1,7 @@
 {
   "name": "xz-pi-pmodel",
   "version": "1.0.0",
-  "description": "Provider-grouped model picker and project-aware model defaults for Pi",
+  "description": "Auth-backed provider picker coordinated with Pi project and global defaults",
   "type": "module",
   "keywords": [
     "pi-package",
@@ -42,17 +42,17 @@
     ]
   },
   "peerDependencies": {
-    "@earendil-works/pi-ai": ">=1.0.0",
-    "@earendil-works/pi-coding-agent": ">=1.0.0",
-    "@earendil-works/pi-tui": ">=1.0.0"
+    "@earendil-works/pi-ai": ">=1.1.0",
+    "@earendil-works/pi-coding-agent": ">=1.1.0",
+    "@earendil-works/pi-tui": ">=1.1.0"
   },
   "dependencies": {
     "minimatch": "^10.2.6"
   },
   "devDependencies": {
-    "@earendil-works/pi-ai": "1.0.0",
-    "@earendil-works/pi-coding-agent": "1.0.0",
-    "@earendil-works/pi-tui": "1.0.0",
+    "@earendil-works/pi-ai": "1.1.0",
+    "@earendil-works/pi-coding-agent": "1.1.0",
+    "@earendil-works/pi-tui": "1.1.0",
     "@types/node": "^22.0.0",
     "tsx": "^4.20.0",
     "typescript": "^5.9.0"

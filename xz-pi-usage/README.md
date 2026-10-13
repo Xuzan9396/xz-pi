@@ -1,6 +1,6 @@
 # xz-pi-usage
 
-Show subscription quota windows, reset times, and Copilot AI credits in Pi.
+Show subscription quota windows, reset times, and Copilot AI credits for the physical account actually serving Pi's selected model.
 
 ## Install
 
@@ -18,13 +18,14 @@ Herdr panes the adapter is inactive.
 
 ## Usage
 
-- The footer shows only the current model's provider, using compact Unicode symbols (not official brand logos). For example `◎p wk95% 6d0h · ↻3` means Codex personal has 95% of its seven-day window remaining, resets in 6 days, and has 3 available rate-limit reset credits. `◎w` means Codex work; Copilot's `◆ 1.6K已用 · ↻2d8h` means about 1,600 AI credits **used**, resetting in 2 days 8 hours. Other symbols: `✦` Claude, `☾` Kimi, `𝕏` Grok, `◇` GLM, `▣` MiniMax.
+- The compact footer keeps Pi's path, branch, context, physical provider, model, thinking level, and extension statuses, but removes cumulative token/cache/cost statistics. The selected physical Provider directly determines quota attribution; no sibling account is guessed or selected automatically. The current account's quota uses compact Unicode symbols (not official brand logos). For example `◎p wk95% 6d0h · ↻3` means Codex personal has 95% of its seven-day window remaining, resets in 6 days, and has 3 available rate-limit reset credits. `◎w` means Codex work; Copilot's `◆ 1.6K已用 · ↻2d8h` means about 1,600 AI credits **used**, resetting in 2 days 8 hours. Other symbols: `✦` Claude, `☾` Kimi, `𝕏` Grok, `◇` GLM, `▣` MiniMax.
 - Window percentages are **remaining**, not used, in both the footer and `/xz-usage`. The detailed command labels seven-day windows as `week` (for example, `week 87%`). Credits without a known limit display the used count, not an invented remaining percentage. If the current provider has no available usage, this plugin shows no footer status.
-- `/xz-usage` queries and shows only supported providers present in Pi's `auth.json`, regardless of the current model. Providers follow their order in that file; unsupported or absent providers are skipped. New or removed auth entries are reflected on the next refresh.
+- `/xz-usage` dynamically reads every provider present in Pi's `auth.json`, regardless of the current model, and resolves named accounts through `xz-pi-login`'s `config/xz-pi-login/accounts.json`. Providers follow their `auth.json` order. Accounts without a known subscription-usage endpoint remain visible with an unsupported message; new, removed, or remapped accounts are reflected on the next refresh.
+- Native `openai` and named `openai-*` providers do not expose subscription usage directly. A named provider therefore maps only to a same-suffix Codex login (`openai-xuzan` → `openai-codex-xuzan`) and reuses that account's quota window under the active provider's label. It never guesses another account, and Codex-only reset credits are not copied into the OpenAI provider footer. If no exact companion exists, the dashboard explains the missing mapping and the footer remains hidden.
 - Codex rate limit resets show the available count and each reset's expiry time.
 - `/xz-usage --refresh` bypasses the five-minute cache.
 
-The footer refreshes every five minutes. Pi sessions share one cache and one cross-process lock, so only one refresh request runs at a time.
+The footer refreshes every five minutes. Model selection changes which existing physical account record is displayed; they do not trigger an extra quota request on every model request. `/reload` clears the displayed cache and waits for one forced refresh, so stale provider data is not carried into the reloaded extension runtime. Pi sessions share one cache and one cross-process lock, so only one refresh request runs at a time.
 
 Other Pi extensions can request a refresh through the generic `pi.events`
 interface: emit `xz-pi-usage:refresh-request` with `{ id: "unique-request-id", force: true }`.

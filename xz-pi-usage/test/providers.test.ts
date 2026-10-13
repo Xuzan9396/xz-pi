@@ -3,6 +3,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { baseProviderId, readAccountAliases } from "../src/account-aliases.js";
 import { formatDashboard, readAuthProviderOrder } from "../src/format.js";
 import { fetchAnthropicUsage } from "../src/providers/anthropic.js";
 import { providerIdsFor, resolveProviderAdapter } from "../src/providers/index.js";
@@ -14,13 +15,19 @@ const ctx: UsageContext = {
   },
 };
 
-test("providers registry resolves aliases and marks unverified adapters", async () => {
+test("providers registry resolves dynamic account aliases and preserves every auth provider", async () => {
+  const aliases = {
+    "claude-work": { base: "anthropic", suffix: "work" },
+    "nested-work": { base: "claude-work", suffix: "nested" },
+  };
   assert.equal(resolveProviderAdapter("openai-codex-personal")?.verified, true);
   assert.equal(resolveProviderAdapter("github-copilot")?.verified, true);
-  assert.equal(resolveProviderAdapter("anthropic")?.verified, false);
+  assert.equal(resolveProviderAdapter("claude-work", aliases)?.id, "anthropic");
+  assert.equal(resolveProviderAdapter("nested-work", aliases)?.id, "anthropic");
+  assert.equal(baseProviderId("nested-work", aliases), "anthropic");
   assert.deepEqual(
     providerIdsFor(["openai-codex-work", "unsupported", "github-copilot", "openai-codex-work"]),
-    ["openai-codex-work", "github-copilot"],
+    ["openai-codex-work", "unsupported", "github-copilot"],
   );
 
   const original = globalThis.fetch;
@@ -32,6 +39,27 @@ test("providers registry resolves aliases and marks unverified adapters", async 
   } finally {
     globalThis.fetch = original;
   }
+});
+
+test("xz-pi-login aliases are read dynamically and malformed entries are ignored", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "xz-usage-aliases-"));
+  const aliasesPath = join(dir, "accounts.json");
+  writeFileSync(aliasesPath, JSON.stringify({
+    version: 1,
+    accounts: {
+      "anthropic-work": { base: "anthropic", suffix: "work" },
+      broken: { suffix: "missing-base" },
+    },
+  }));
+  assert.deepEqual(await readAccountAliases(aliasesPath), {
+    "anthropic-work": { base: "anthropic", suffix: "work" },
+  });
+  writeFileSync(aliasesPath, JSON.stringify({ version: 1, accounts: {
+    "xai-personal": { base: "xai", suffix: "personal" },
+  } }));
+  assert.deepEqual(await readAccountAliases(aliasesPath), {
+    "xai-personal": { base: "xai", suffix: "personal" },
+  });
 });
 
 test("dashboard follows auth.json key order regardless of current model or cache order", async () => {

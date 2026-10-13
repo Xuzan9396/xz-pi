@@ -32,6 +32,7 @@ import type { GlobalScopedModelsState } from "./scoped-models.js";
 export type SelectorAction =
   | { type: "cancel" }
   | { type: "select-model"; model: Model<any> }
+  | { type: "save-global-scope"; modelIds: string[] }
   | { type: "clear-project-model-default" };
 
 export interface PModelSelectorConfig {
@@ -48,7 +49,6 @@ export interface PModelSelectorConfig {
 
 export interface PModelSelectorCallbacks {
   onToggleModelDefault: (model: Model<any>, layer: PreferenceLayer) => Promise<ModelDefaultState>;
-  onToggleGlobalScope: (model: Model<any>) => GlobalScopedModelsState | Promise<GlobalScopedModelsState>;
   onPreferenceChange: (
     layer: PreferenceLayer,
     override: PreferenceOverride,
@@ -107,8 +107,7 @@ export class PModelSelectorComponent extends Container implements Focusable {
   private preferences: CatalogPreferences;
   private submenu: Submenu | undefined;
   private globalScope: GlobalScopedModelsState;
-  private scopeSaving = false;
-  private scopeSaved = false;
+  private scopeDirty = false;
   private scopeNotice = "";
   private defaults: ModelDefaultState;
   private defaultSaving = false;
@@ -206,7 +205,7 @@ export class PModelSelectorComponent extends Container implements Focusable {
     this.scopeText.setText(
       `${this.theme.fg("muted", "Scope: ")}${this.theme.fg("accent", this.scope)}` +
       (this.scope === "all"
-        ? this.theme.fg("muted", ` · Sort: global · ✓ = saved global scoped (${this.globalScope.modelIds.length}/${this.config.allModels.length})`)
+        ? this.theme.fg("muted", ` · Sort: global · ✓ = ${this.scopeDirty ? "draft" : "saved"} global scoped (${this.globalScope.modelIds.length}/${this.config.allModels.length})`)
         : this.theme.fg("muted", " · Sort: global" + (this.showHidden ? " · hidden" : " · visible"))),
     );
     this.visibilityText.setText(this.showHidden && this.scope === "scoped"
@@ -221,11 +220,11 @@ export class PModelSelectorComponent extends Container implements Focusable {
     const warnings = [
       this.preferenceSaving ? "Saving preferences…" : "",
       this.defaultSaving ? "Saving model default…" : this.defaultNotice,
-      this.scopeSaving ? "Saving global scoped selection…" : this.scopeNotice,
-      this.scopeSaved ? "Global scope saved. Restart Pi (pi -c) to sync /model, /scoped-models and cycling; /reload is not enough." : "",
+      this.scopeNotice,
+      this.scopeDirty ? "Global scoped selection has unsaved changes. Press Ctrl+S to save and synchronize this session." : "",
       this.globalScope.projectOverride ? "Project enabledModels overrides global scope; global edits do not clear that override." : "",
-      !this.scopeSaved && this.globalScope.sessionDiffers
-        ? "Saved global scope differs from this session (project / --models / pending restart)."
+      !this.scopeDirty && this.globalScope.sessionDiffers
+        ? "Saved global scope differs from this session (project / --models / pending synchronization)."
         : "",
       this.scope === "all" && this.globalScope.unrestricted ? "Global scope is unrestricted: all available models are checked." : "",
       this.scope === "scoped" && hiddenCurrent ? "current is hidden" : "",
@@ -235,7 +234,7 @@ export class PModelSelectorComponent extends Container implements Focusable {
     this.helpText.setText(this.theme.fg(
       "dim",
       this.scope === "all"
-        ? "↑↓ move · ←→ fold · Enter check/uncheck scoped (global) · Tab scoped · Esc close"
+        ? "↑↓ move · ←→ fold · Enter check/uncheck scoped (global) · Ctrl+S save & sync · Tab scoped · Esc discard/close"
         : "G=global P=project · ↑↓ move · ←→ model/global/project · Space/Enter check · Enter on name selects · / search · Tab all · Alt+↑/↓ reorder (global) · Ctrl+O hidden · Ctrl+X hide/restore · Ctrl+R reset · Esc close",
     ));
     this.renderList();
@@ -264,19 +263,21 @@ export class PModelSelectorComponent extends Container implements Focusable {
       else continuedProvider = firstRow.provider;
     }
     const end = Math.min(start + maxVisible - (continuedProvider ? 1 : 0), this.rows.length);
+    const listIndent = "  ";
+    const modelIndent = "  ";
     if (continuedProvider) {
-      this.list.addChild(new Text(this.theme.bold(`▾ ${continuedProvider} (continued)`), 0, 0));
+      this.list.addChild(new Text(listIndent + "  " + this.theme.bold(`↓ ${continuedProvider} (continued)`), 0, 0));
     }
     for (let index = start; index < end; index++) {
       const row = this.rows[index]!;
       const selected = index === this.selectedIndex;
-      const prefix = selected ? this.theme.fg("accent", "→ ") : "  ";
+      const prefix = listIndent + (selected ? this.theme.fg("accent", "→ ") : "  ");
       if (row.kind === "provider") {
         const folded = this.collapsed.has(row.provider) && this.searchInput.getValue().length === 0;
         const count = this.scope === "all"
           ? row.group.models.filter((entry) => entry.available).length
           : this.showHidden ? row.group.hiddenModels.length : row.group.visibleModels.length;
-        const text = `${folded ? "▸" : "▾"} ${row.provider} (${count})`;
+        const text = `${folded ? "→" : "↓"} ${row.provider} (${count})`;
         const badges = folded ? [
           this.config.current?.provider === row.provider ? this.statusBadge("current", "current") : "",
           this.defaults.global?.provider === row.provider ? this.statusBadge("global default", "global") : "",
@@ -294,17 +295,18 @@ export class PModelSelectorComponent extends Container implements Focusable {
       if (this.scope === "scoped") {
         const compact = this.renderWidth < 60;
         const cell = (layer: PreferenceLayer, checked: boolean) => {
-          const label = `[${layer === "project" && !this.config.projectTrusted ? "-" : checked ? "x" : " "}] ${compact ? layer === "global" ? "G" : "P" : layer}`;
+          const projectLocked = layer === "project" && !this.config.projectTrusted;
+          const label = `[${projectLocked ? "-" : checked ? "x" : " "}] ${compact ? layer === "global" ? "G" : "P" : layer}`;
           const text = selected && this.column === layer ? `‹${label}›` : label;
           return checked ? this.statusBadge(text, layer) : selected && this.column === layer
             ? this.theme.fg("accent", text) : this.theme.fg("muted", text);
         };
         const cells = cell("global", entry.globalDefault) + " " + cell("project", entry.projectDefault);
-        const nameWidth = Math.max(1, this.renderWidth - visibleWidth(cells) - 5);
+        const nameWidth = Math.max(1, this.renderWidth - visibleWidth(cells) - 9);
         const plainName = truncateToWidth(entry.id + (entry.available ? "" : " (unavailable)"), nameWidth, "…");
         const name = selected && this.column === "model" ? this.theme.fg("accent", plainName) : plainName;
         const current = entry.current ? this.statusBadge("● ", "current") : "  ";
-        this.list.addChild(new Text(`${prefix}${current}${name}${" ".repeat(Math.max(0, nameWidth - visibleWidth(plainName)))} ${cells}`, 0, 0));
+        this.list.addChild(new Text(`${prefix}${modelIndent}${current}${name}${" ".repeat(Math.max(0, nameWidth - visibleWidth(plainName)))} ${cells}`, 0, 0));
         continue;
       }
       const badges = [
@@ -322,10 +324,10 @@ export class PModelSelectorComponent extends Container implements Focusable {
         : entry.current ? this.statusBadge("● ", "current") : "  ";
       const name = selected ? this.theme.fg("accent", entry.id) : entry.id;
       // Status comes before potentially long IDs, so truncation cannot hide current/default.
-      this.list.addChild(new Text(`${prefix}${check}${badges.length > 0 ? badges.join(" ") + " " : ""}${name}${markerText}`, 0, 0));
+      this.list.addChild(new Text(`${prefix}${modelIndent}${check}${badges.length > 0 ? badges.join(" ") + " " : ""}${name}${markerText}`, 0, 0));
     }
     if (start > 0 || end < this.rows.length) {
-      this.list.addChild(new Text(this.theme.fg("muted", `  (${this.selectedIndex + 1}/${this.rows.length})`), 0, 0));
+      this.list.addChild(new Text(this.theme.fg("muted", `${listIndent}  (${this.selectedIndex + 1}/${this.rows.length})`), 0, 0));
     }
   }
 
@@ -391,21 +393,33 @@ export class PModelSelectorComponent extends Container implements Focusable {
     }
   }
 
-  private async toggleGlobalScope(model: Model<any>): Promise<void> {
-    if (this.scopeSaving) return;
-    this.scopeSaving = true;
+  private toggleGlobalScope(model: Model<any>): void {
+    const key = `${model.provider}/${model.id}`;
+    const selected = new Set(this.globalScope.modelIds);
+    if (selected.has(key)) {
+      if (selected.size === 1) {
+        const error = new Error("Cannot uncheck the last available scoped model: Pi treats an empty scope as all models.");
+        this.scopeNotice = error.message;
+        this.callbacks.onError?.(error);
+        this.rebuildRows();
+        return;
+      }
+      selected.delete(key);
+    } else {
+      selected.add(key);
+    }
+    const modelIds = this.config.allModels
+      .map((candidate) => `${candidate.provider}/${candidate.id}`)
+      .filter((id) => selected.has(id));
+    this.globalScope = {
+      ...this.globalScope,
+      modelIds,
+      unrestricted: modelIds.length === this.config.allModels.length,
+      sessionDiffers: true,
+    };
+    this.scopeDirty = true;
     this.scopeNotice = "";
     this.rebuildRows();
-    try {
-      this.globalScope = await this.callbacks.onToggleGlobalScope(model);
-      this.scopeSaved = true;
-    } catch (error) {
-      this.scopeNotice = error instanceof Error ? error.message : String(error);
-      this.callbacks.onError?.(error);
-    } finally {
-      this.scopeSaving = false;
-      this.rebuildRows();
-    }
   }
 
   private applyPreference(override: PreferenceOverride): void {
@@ -512,7 +526,7 @@ export class PModelSelectorComponent extends Container implements Focusable {
   }
 
   handleInput(data: string): void {
-    if (this.scopeSaving || this.defaultSaving || this.preferenceSaving) return;
+    if (this.defaultSaving || this.preferenceSaving) return;
     if (this.handleSubmenuInput(data)) return;
     if (this.visibilityFocus && this.scope === "scoped") {
       if (this.keybindings.matches(data, "tui.editor.cursorLeft")) this.editLayer = "global";
@@ -531,8 +545,12 @@ export class PModelSelectorComponent extends Container implements Focusable {
       if (this.scope === "all" || this.column !== "model") this.activateSelected();
       return;
     }
+    if (this.scope === "all" && (this.keybindings.matches(data, "app.models.save") || matchesKey(data, "ctrl+s"))) {
+      this.done({ type: "save-global-scope", modelIds: [...this.globalScope.modelIds] });
+      return;
+    }
     if (this.scope === "all" && (
-      (["app.models.reorderUp", "app.models.reorderDown", "app.tools.expand", "app.thinking.toggle", "app.models.save"] as const)
+      (["app.models.reorderUp", "app.models.reorderDown", "app.tools.expand", "app.thinking.toggle"] as const)
         .some((action) => this.keybindings.matches(data, action)) ||
       (["ctrl+x", "ctrl+r"] as const).some((key) => matchesKey(data, key))
     )) {

@@ -146,20 +146,58 @@ async function persistGlobalEnabledModels(
   if (writeErrors.length > 0) throw writeErrors[0]!.error;
 }
 
+export async function saveGlobalScopedModels(
+  paths: PiSettingsPaths,
+  allModels: readonly Model<any>[],
+  sessionScopedModels: readonly Model<any>[],
+  modelIds: readonly string[],
+  projectTrusted = true,
+): Promise<GlobalScopedModelsState> {
+  const settings = readPiSettingsFile(paths.global);
+  const availableIds = new Set(allModels.map(modelKey));
+  const selectedIds = [...new Set(modelIds)];
+  const unknown = selectedIds.find((id) => !availableIds.has(id));
+  if (unknown) throw new Error(`Cannot scope unavailable model: ${unknown}`);
+  if (selectedIds.length === 0) {
+    throw new Error("Cannot save an empty scoped selection: Pi treats an empty scope as all models.");
+  }
+  const selected = new Set(selectedIds);
+  const ordered = allModels.map(modelKey).filter((id) => selected.has(id));
+  // Match the official selector's unavailable-row behavior: an account provider
+  // may be registered after this process built its first model snapshot. Saving a
+  // visible draft must not erase configured references that are unresolved here.
+  const unresolved = (settings.enabledModels ?? []).filter((pattern) => (
+    resolveScopedPattern(pattern, allModels).length === 0
+  ));
+  const next = [...ordered, ...unresolved.filter((pattern) => !ordered.includes(pattern))];
+  const allSelected = ordered.length === allModels.length;
+  await persistGlobalEnabledModels(paths, allSelected && unresolved.length === 0 ? undefined : next);
+  return readGlobalScopedModelsState(paths, allModels, sessionScopedModels, projectTrusted);
+}
+
 export async function cleanupGlobalScopedModels(
   paths: PiSettingsPaths,
   catalogModels: readonly Model<any>[],
-  options: { catalogError?: string } = {},
+  options: {
+    catalogError?: string;
+    availableModels?: readonly Model<any>[];
+    registeredProviders?: readonly string[];
+    authoritativeProviders?: boolean;
+  } = {},
 ): Promise<ScopedModelsCleanupResult> {
-  // Never interpret authentication availability, an empty snapshot, or a failed
-  // models.json load as evidence of deletion. Callers pass registry.getAll().
-  if (options.catalogError || catalogModels.length === 0) {
+  // The complete catalog establishes whether a reference is known. The available
+  // snapshot distinguishes models withdrawn by an authenticated, working provider;
+  // an entirely unavailable provider is treated as unauthenticated and retained.
+  if (options.catalogError || catalogModels.length === 0 && !options.authoritativeProviders) {
     return {
       removedPatterns: [],
       skippedReason: options.catalogError ? "Model catalog has errors; references were retained." : "Model catalog is empty; references were retained.",
     };
   }
   const settings = readPiSettingsFile(paths.global);
+  const availableModels = options.availableModels ?? catalogModels;
+  const availableProviders = new Set(availableModels.map((model) => model.provider.toLowerCase()));
+  const registeredProviders = new Set((options.registeredProviders ?? []).map((provider) => provider.toLowerCase()));
   const removedPatterns: string[] = [];
   const remaining = (settings.enabledModels ?? []).filter((pattern) => {
     const reference = pattern.trim();
@@ -167,8 +205,15 @@ export async function cleanupGlobalScopedModels(
     // Only prune unresolved qualified references. Preserve bare aliases and
     // future-looking glob/brace/extglob patterns, even when they match nothing.
     const isPattern = /[*?\[\]{}]/.test(reference) || /[+@!]\(/.test(reference);
-    const qualified = slash > 0 && reference.slice(slash + 1).trim().length > 0;
-    if (!qualified || isPattern || resolveScopedPattern(pattern, catalogModels).length > 0) return true;
+    const provider = slash > 0 ? reference.slice(0, slash).trim().toLowerCase() : "";
+    const qualified = provider.length > 0 && reference.slice(slash + 1).trim().length > 0;
+    if (!qualified || isPattern) return true;
+    const available = resolveScopedPattern(pattern, availableModels).length > 0;
+    const known = resolveScopedPattern(pattern, catalogModels).length > 0;
+    // Preserve references when their whole provider is unavailable. This usually
+    // means authentication/catalog discovery is pending, not that every model was
+    // deleted. Dynamic account aliases can be registered before publishing models.
+    if (available || (!options.authoritativeProviders && !availableProviders.has(provider) && (known || registeredProviders.has(provider)))) return true;
     removedPatterns.push(pattern);
     return false;
   });

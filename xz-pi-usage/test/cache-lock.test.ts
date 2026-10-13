@@ -65,3 +65,34 @@ test("cache refresh runs one provider sweep and stores only sanitized snapshot d
   assert.equal(calls, 5);
   assert.deepEqual((await readUsageCache())?.snapshots.map((item) => item.providerId), ["openai-codex-personal"]);
 });
+
+test("refresh keeps unsupported auth providers and passes an alias base to adapters", async () => {
+  process.env.XZ_PI_USAGE_DIR = mkdtempSync(join(tmpdir(), "xz-pi-usage-dynamic-"));
+  const aliases = { "anthropic-work": { base: "anthropic", suffix: "work" } };
+  const seen: Array<{ providerId: string; baseProviderId: string | undefined }> = [];
+  await refreshUsage(ctx, {
+    force: true,
+    providerIds: ["anthropic-work"],
+    aliases,
+    fetchSnapshot: async (_ctx, providerId, deps) => {
+      seen.push({ providerId, baseProviderId: deps.baseProviderId });
+      return {
+        providerId, name: "Claude", status: "ok", verified: false,
+        windows: [], credits: [], fetchedAt: 1,
+      };
+    },
+  });
+  assert.deepEqual(seen, [{ providerId: "anthropic-work", baseProviderId: "anthropic" }]);
+
+  const unsupported = await refreshUsage(ctx, {
+    force: true,
+    providerIds: ["custom-xuzan"],
+    aliases: { "custom-xuzan": { base: "custom", suffix: "xuzan" } },
+    now: () => 10,
+  });
+  assert.deepEqual(unsupported.snapshots.map(({ providerId, status, detail }) => ({ providerId, status, detail })), [{
+    providerId: "custom-xuzan",
+    status: "unsupported",
+    detail: "暂无可用的订阅额度查询接口",
+  }]);
+});

@@ -58,7 +58,7 @@ function orderedValues(values: Iterable<string>, preferred: readonly string[] = 
   const known = new Set(values);
   const ordered: string[] = [];
   for (const value of preferred) {
-    if (!ordered.includes(value)) ordered.push(value);
+    if (known.has(value) && !ordered.includes(value)) ordered.push(value);
   }
   const remaining = [...known].filter((value) => !ordered.includes(value));
   remaining.sort((a, b) => a.localeCompare(b));
@@ -82,9 +82,6 @@ export function applyCatalogPreferences(
 ): ProviderGroup[] {
   const available = new Map(models.map((model) => [fullId(model.provider, model.id), model]));
   const providerIds = new Set(models.map((model) => model.provider));
-  for (const provider of preferences.providerOrder ?? []) providerIds.add(provider);
-  for (const provider of Object.keys(preferences.providers ?? {})) providerIds.add(provider);
-
   return orderedValues(providerIds, preferences.providerOrder).map((provider) => {
     const providerPreferences = preferences.providers?.[provider];
     const actualIds = models.filter((model) => model.provider === provider).map((model) => model.id);

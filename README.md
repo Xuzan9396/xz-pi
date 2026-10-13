@@ -28,6 +28,7 @@ npm --version
 | --- | --- | --- |
 | [`xz-pi-btw`](./xz-pi-btw) | 提供不污染主会话的 `/btw` 临时旁路问答 | [![npm](https://img.shields.io/npm/v/xz-pi-btw)](https://www.npmjs.com/package/xz-pi-btw) |
 | [`xz-pi-build-ios-apps`](./xz-pi-build-ios-apps) | 提供自动路由、9 个专项技能与 XcodeBuildMCP MCP 集成 | [![npm](https://img.shields.io/npm/v/xz-pi-build-ios-apps)](https://www.npmjs.com/package/xz-pi-build-ios-apps) |
+| [`xz-pi-login`](./xz-pi-login) | 使用自定义别名管理多个 Provider 登录与额度，模型只由用户手动选择 | [![npm](https://img.shields.io/npm/v/xz-pi-login)](https://www.npmjs.com/package/xz-pi-login) |
 | [`xz-pi-playwright-cli`](./xz-pi-playwright-cli) | 提供 Microsoft Playwright CLI 技能，用于浏览器自动化与测试 | [![npm](https://img.shields.io/npm/v/xz-pi-playwright-cli)](https://www.npmjs.com/package/xz-pi-playwright-cli) |
 | [`xz-pi-pmodel`](./xz-pi-pmodel) | 按 provider 分组模型，直接勾选全局/项目默认，只读 Pi 实际思考程度 | [![npm](https://img.shields.io/npm/v/xz-pi-pmodel)](https://www.npmjs.com/package/xz-pi-pmodel) |
 | [`xz-pi-side-agents-herdr`](./xz-pi-side-agents-herdr) | 在 Herdr Pane 和独立 Git Worktree 中运行异步 Side Agent | 本地包，见安装说明 |
@@ -47,6 +48,9 @@ pi install npm:xz-pi-btw
 
 # iOS 与 SwiftUI 构建、调试和性能技能
 pi install npm:xz-pi-build-ios-apps
+
+# 可命名的多 Provider 账号登录与额度状态
+pi install npm:xz-pi-login
 
 # Vim 模态编辑
 pi install npm:xz-pi-vim
@@ -130,6 +134,16 @@ pi install npm:xz-pi-btw
 
 详细说明见 [`xz-pi-btw/README.md`](./xz-pi-btw/README.md)。
 
+### xz-pi-login
+
+注册 `/xz-login`，从 Pi 当前 Provider Registry 动态选择 Provider，再输入 `work`、`personal` 等别名，生成 `openai-work` 这类独立登录。保留账号额度、诊断状态和可选择的安全删除，不自动轮换、失败救援、补切模型或修改思考度；`/xz-login next` 已移除，切换请用 `/model` 或 `/pmodel`，思考请用原生 `/thinking`。新窗口使用 Pi 默认，旧会话遵循最后记录及宿主恢复规则。凭据仍由 Pi `/login` 管理，本包只保存不含密钥的账号归属映射。
+
+```bash
+pi install npm:xz-pi-login
+```
+
+详细说明见 [`xz-pi-login/README.md`](./xz-pi-login/README.md)。
+
 ### xz-pi-usage
 
 页脚仅显示当前模型提供商的订阅额度，以不同 Unicode 符号和剩余百分比紧凑展示（例如 `◎p wk95% 6d0h · ↻3` 表示 Codex personal 周额度剩余 95%、6 天后重置、3 张可用重置券）；`/xz-usage` 查看所有已连接提供商的详细额度，包括 Codex personal/work 的 5 小时、周窗口和重置时间，以及 Copilot AI credits 使用量。页脚每 5 分钟刷新，`/xz-usage --refresh` 可强制刷新。
@@ -208,7 +222,7 @@ pi install npm:xz-pi-websearch
 
 ### xz-pi-pmodel
 
-注册独立的 `/pmodel` 模型选择器，按 provider 分组模型，保留折叠、包含式多关键词搜索、全局排序和隐藏恢复。`scoped` 模型行直接提供 `[ ] global`、`[ ] project`，左右选择操作位置，空格/回车勾选；每列最多一个默认，global 不可取消，project 可取消并继承 global。两层默认同时显示，不再通过 Ctrl+G 切层保存。勾选成功后刷新界面、不切换当前模型，关闭时统一 `/reload`；模型名处回车才切换。思考程度仅显示 Pi 当前真实值，完全由原生 `/thinking` 管理，无自定义设置菜单。隐藏管理仍保留全局/项目作用域，界面直接选择；排序始终全局共享。旧项目思考字段在可信项目内无备份清理一次，记录迁移完成后不再持续删除原生配置，保留全局和无关字段。`all` 只管理官方全局 `enabledModels` 成员，保存范围仍需完整重启 Pi 同步运行态；失效引用清理与项目模型/可见性回退规则保留。
+注册独立的 `/pmodel` 模型选择器，按 provider 分组模型，保留折叠、包含式多关键词搜索、全局排序和隐藏恢复。`scoped` 模型行直接提供 `[ ] global`、`[ ] project`，左右选择操作位置，空格/回车勾选；每列最多一个默认，global 不可取消，project 可取消并继承 global。两层默认同时显示，不再通过 Ctrl+G 切层保存。勾选成功后刷新界面、不切换当前模型，关闭时统一 `/reload`；模型名处回车才切换。思考程度仅显示 Pi 当前真实值，完全由原生 `/thinking` 管理，无自定义设置菜单。隐藏管理仍保留全局/项目作用域，界面直接选择；排序始终全局共享。旧项目思考字段在可信项目内无备份清理一次，记录迁移完成后不再持续删除原生配置，保留全局和无关字段。`all` 只编辑官方全局 `enabledModels` 草稿，`Ctrl+S` 统一保存；从 `/pmodel` 打开时会重建当前会话运行态，让 `/model`、`/scoped-models` 和模型循环立即同步。失效引用清理与项目模型/可见性回退规则保留。
 
 本包不会修改或覆盖官方 `/model`、`/scoped-models`、模型循环和 `/thinking`。要求 Node.js 22.19+ 与 Pi 1.0+。
 
@@ -248,6 +262,7 @@ pi install npm:xz-pi-vim
 ```bash
 npm view xz-pi-btw version
 npm view xz-pi-build-ios-apps version
+npm view xz-pi-login version
 npm view xz-pi-playwright-cli version
 npm view xz-pi-websearch version
 npm view xz-pi-vim version
@@ -258,6 +273,7 @@ npm view xz-pi-vim version
 ```bash
 npm list --prefix "$HOME/.pi/agent/npm" xz-pi-btw --depth=0
 npm list --prefix "$HOME/.pi/agent/npm" xz-pi-build-ios-apps --depth=0
+npm list --prefix "$HOME/.pi/agent/npm" xz-pi-login --depth=0
 npm list --prefix "$HOME/.pi/agent/npm" xz-pi-playwright-cli --depth=0
 npm list --prefix "$HOME/.pi/agent/npm" xz-pi-websearch --depth=0
 npm list --prefix "$HOME/.pi/agent/npm" xz-pi-vim --depth=0
@@ -300,6 +316,7 @@ pi remove npm:xz-pi-vim
 pi remove npm:xz-pi-websearch
 pi remove npm:xz-pi-playwright-cli
 pi remove npm:xz-pi-build-ios-apps
+pi remove npm:xz-pi-login
 ```
 
 项目级卸载：
@@ -329,6 +346,7 @@ npm run check
 ```bash
 pi -e ./xz-pi-btw
 pi -e ./xz-pi-build-ios-apps
+pi -e ./xz-pi-login
 pi -e ./xz-pi-vim
 pi -e ./xz-pi-websearch
 pi -e ./xz-pi-playwright-cli

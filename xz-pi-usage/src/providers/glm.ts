@@ -9,7 +9,7 @@ const ENDPOINTS: Record<string, { url: string; authorization: (key: string) => s
 export async function fetchGlmUsage(ctx: UsageContext, providerId = "zai", deps: ProviderDeps = {}): Promise<UsageSnapshot> {
   const now = deps.now?.() ?? Date.now();
   try {
-    const endpoint = ENDPOINTS[providerId];
+    const endpoint = ENDPOINTS[deps.baseProviderId ?? providerId];
     if (!endpoint) throw new Error("unsupported provider");
     const key = await apiKey(ctx, providerId, deps.readCredential);
     const response = await getJson(endpoint.url, key, { Authorization: endpoint.authorization(key), "Accept-Language": "en-US,en" });

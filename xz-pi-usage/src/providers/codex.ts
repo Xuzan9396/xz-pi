@@ -33,7 +33,7 @@ function windowLabel(seconds: number): string {
   return "窗口";
 }
 
-function parseWindow(value: any): UsageWindow | undefined {
+export function parseCodexWindow(value: any): UsageWindow | undefined {
   if (!value || typeof value !== "object") return undefined;
   const seconds = Number(value.limit_window_seconds);
   const resetAt = parseTimestamp(value.reset_at);
@@ -86,7 +86,7 @@ export async function fetchCodexUsage(
       accountId ? { "ChatGPT-Account-Id": accountId } : {},
     );
     const windows = [usage?.rate_limit?.primary_window, usage?.rate_limit?.secondary_window]
-      .map(parseWindow)
+      .map(parseCodexWindow)
       .filter((window): window is UsageWindow => window !== undefined);
     const resetCredits = await fetchCodexResetCredits(usage, token, accountId);
     return snapshot(providerId, name, true, now, {

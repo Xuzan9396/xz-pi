@@ -6,6 +6,7 @@ import { readXzPiVimSettings } from "./src/settings.js";
 import { readEnabledPackageSources } from "./src/package-references.js";
 import { buildReferenceCatalog, createToolReferenceAutocompleteProvider, ToolReferenceTracker, type ToolReference } from "./src/tool-references.js";
 import { WorkDurationTimer } from "./src/work-duration.js";
+import { MCP_STATUS_EVENT, parseMcpReferenceSnapshot, type McpReferenceServer } from "./src/mcp-references.js";
 
 export { XzModalEditor } from "./src/modal-editor.js";
 
@@ -23,6 +24,14 @@ export default function xzPiVim(pi: ExtensionAPI): void {
   let activateReferencedTools = true;
   let referencesForTurn: ToolReference[] = [];
   let workDurationLabel: string | undefined;
+  let mcpServers: readonly McpReferenceServer[] | undefined;
+  let enabledReferencePackages: readonly string[] = [];
+  // Subscribe at factory load, before session_start initializes adapter metadata.
+  // Do not clear here on session_start: the adapter may emit first in load order.
+  pi.events.on(MCP_STATUS_EVENT, (value) => {
+    const snapshot = parseMcpReferenceSnapshot(value);
+    if (snapshot !== undefined) mcpServers = snapshot;
+  });
   const workDurationTimer = new WorkDurationTimer((duration) => {
     workDurationLabel = `⏱ working ${duration}`;
     activeEditor?.setWorkDurationLabel(workDurationLabel);
@@ -40,9 +49,10 @@ export default function xzPiVim(pi: ExtensionAPI): void {
     }
     if (settings.toolReferences) {
       const enabledPackages = readEnabledPackageSources(ctx.cwd, ctx.isProjectTrusted());
+      enabledReferencePackages = enabledPackages;
       ctx.ui.addAutocompleteProvider((current) => createToolReferenceAutocompleteProvider(
         current,
-        () => buildReferenceCatalog(pi.getAllTools(), enabledPackages),
+        () => buildReferenceCatalog(pi.getAllTools(), enabledPackages, mcpServers),
         (completion) => activeEditor?.queueCompletedToolReference(completion),
       ));
     }
@@ -89,7 +99,15 @@ export default function xzPiVim(pi: ExtensionAPI): void {
   pi.on("input", (event) => {
     if (event.source !== "extension") workDurationTimer.start();
     if (event.source !== "interactive") return;
-    const references = referenceTracker.consumeSubmitted(event.text);
+    const submitted = referenceTracker.consumeSubmitted(event.text);
+    if (submitted.length === 0) return;
+    // Recheck the current catalog at submission: a server can have been disabled
+    // since completion, so stale tags must not reactivate its retired tools.
+    const catalog = buildReferenceCatalog(pi.getAllTools(), enabledReferencePackages, mcpServers);
+    const references = submitted.flatMap((reference) => {
+      const current = catalog.find((candidate) => candidate.kind === reference.kind && candidate.name === reference.name);
+      return current ? [{ ...reference, memberToolNames: current.memberToolNames }] : [];
+    });
     if (references.length === 0) return;
     referencesForTurn = references;
     if (activateReferencedTools) {

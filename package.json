@@ -6,6 +6,7 @@
   "workspaces": [
     "xz-pi-btw",
     "xz-pi-build-ios-apps",
+    "xz-pi-login",
     "xz-pi-playwright-cli",
     "xz-pi-pmodel",
     "xz-pi-planning-status",

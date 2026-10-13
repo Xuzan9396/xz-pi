@@ -60,6 +60,9 @@ export type StoredCredentialReader = (providerId: string) => unknown | Promise<u
 export interface ProviderDeps {
   readCredential?: StoredCredentialReader;
   now?: () => number;
+  baseProviderId?: string;
+  accountAliasSuffix?: string;
+  companionProviderIds?: readonly string[];
 }
 
 export interface ProviderAdapter {

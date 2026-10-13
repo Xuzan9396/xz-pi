@@ -1,6 +1,7 @@
 import type { AutocompleteItem, AutocompleteProvider, AutocompleteSuggestions } from "@earendil-works/pi-tui";
 import { fuzzyFilter } from "@earendil-works/pi-tui";
 import type { TextRange } from "./types.js";
+import type { McpReferenceServer } from "./mcp-references.js";
 
 export type ToolReferenceSource = "builtin" | "extension" | "mcp";
 export type ToolReferenceKind = "mcp" | "package" | "tool";
@@ -17,6 +18,8 @@ export type ToolReferenceCandidate = {
 export type ReferenceToolMetadata = {
   name: string;
   description: string;
+  exposure?: string;
+  namespace?: { name: string };
   sourceInfo: {
     source: string;
     path: string;
@@ -53,11 +56,23 @@ export function classifyToolSource(tool: {
   return "extension";
 }
 
-function mcpServerName(tool: ReferenceToolMetadata): string | undefined {
+function mcpServerName(tool: ReferenceToolMetadata, serverNames: readonly string[]): string | undefined {
+  if (tool.namespace?.name) return tool.namespace.name;
+  // Adapter direct tools use a server-name prefix rather than namespace metadata.
+  // Longest names first avoid treating foo_bar's tools as belonging to foo.
+  for (const name of serverNames) {
+    const normalized = name.replace(/[^A-Za-z0-9_]/g, "_");
+    if (tool.name === `mcp__${normalized}` || tool.name.startsWith(`mcp__${normalized}_`) ||
+        tool.name.startsWith(`${normalized}_`)) return name;
+  }
   if (tool.name.toLowerCase().startsWith("mcp__")) {
     const remainder = tool.name.slice(5);
     return remainder.split("__", 1)[0] || undefined;
   }
+  // Adapter gateway tools belong to a package, not to a server. A package name
+  // containing "mcp" is not evidence of an actual MCP server registration.
+  if (tool.name === "mcp" || tool.sourceInfo.origin === "package" ||
+      `${tool.sourceInfo.source} ${tool.sourceInfo.path}`.toLowerCase().includes("pi-mcp-adapter")) return undefined;
   const source = tool.sourceInfo.source;
   if (source.toLowerCase().includes("mcp")) {
     return source.replace(/^(?:npm|git):/, "").replace(/@[^/@]+$/, "").split(/[\\/]/).filter(Boolean).at(-1);
@@ -75,7 +90,13 @@ function packageName(source: string): string {
 export function buildReferenceCatalog(
   tools: readonly ReferenceToolMetadata[],
   enabledPackages: readonly string[] = [],
+  mcpServers?: readonly McpReferenceServer[],
 ): ToolReferenceCandidate[] {
+  const enabledServers = mcpServers === undefined ? undefined : new Map(
+    mcpServers.filter((server) => !server.disabled && server.status !== "disabled" && server.status !== "blocked")
+      .map((server) => [server.name, server]),
+  );
+  const serverNamesByLength = (mcpServers ?? []).map((server) => server.name).sort((a, b) => b.length - a.length);
   const mcpGroups = new Map<string, ReferenceToolMetadata[]>();
   const packageGroups = new Map<string, ReferenceToolMetadata[]>();
   const packageSources = new Map<string, string>();
@@ -87,7 +108,10 @@ export function buildReferenceCatalog(
   const toolCandidates: ToolReferenceCandidate[] = [];
 
   for (const tool of tools) {
+    if (tool.exposure === "hidden") continue;
     const source = classifyToolSource(tool);
+    const server = source === "mcp" ? mcpServerName(tool, serverNamesByLength) : undefined;
+    if (server && enabledServers && !enabledServers.has(server)) continue;
     toolCandidates.push({
       name: tool.name,
       description: tool.description,
@@ -97,10 +121,7 @@ export function buildReferenceCatalog(
       memberToolNames: [tool.name],
     });
 
-    if (source === "mcp") {
-      const server = mcpServerName(tool);
-      if (server) mcpGroups.set(server, [...(mcpGroups.get(server) ?? []), tool]);
-    }
+    if (server) mcpGroups.set(server, [...(mcpGroups.get(server) ?? []), tool]);
     if (tool.sourceInfo.origin === "package") {
       const name = packageName(tool.sourceInfo.source);
       packageGroups.set(name, [...(packageGroups.get(name) ?? []), tool]);
@@ -108,14 +129,25 @@ export function buildReferenceCatalog(
     }
   }
 
-  const mcpCandidates = [...mcpGroups.entries()].map(([name, members]): ToolReferenceCandidate => ({
-    name,
-    description: `${members.length} tool${members.length === 1 ? "" : "s"}`,
-    kind: "mcp",
-    source: "mcp",
-    sourceLabel: members[0]!.sourceInfo.source,
-    memberToolNames: members.map((tool) => tool.name),
-  }));
+  // A lazy server can be enabled before it has registered any namespace tool.
+  // Use status metadata for visibility/counts, not the number of proxy wrappers.
+  const gateway = toolCandidates.find((tool) => tool.name === "mcp" && tool.source === "mcp");
+  const serverNames = enabledServers ? [...enabledServers.keys()] : [...mcpGroups.keys()];
+  const mcpCandidates = serverNames.map((name): ToolReferenceCandidate => {
+    const members = mcpGroups.get(name) ?? [];
+    const status = enabledServers?.get(name);
+    const count = status?.toolCount ?? members.length;
+    return {
+      name,
+      description: status?.status === "not-connected" && count === 0
+        ? "enabled · not-connected"
+        : `${count} tool${count === 1 ? "" : "s"}${status ? ` · ${status.status}` : ""}`,
+      kind: "mcp",
+      source: "mcp",
+      sourceLabel: members[0]?.sourceInfo.source ?? name,
+      memberToolNames: members.length ? members.map((tool) => tool.name) : gateway?.memberToolNames.slice() ?? [],
+    };
+  });
   const packageCandidates = [...packageGroups.entries()]
     .map(([name, members]): ToolReferenceCandidate => ({
       name,
@@ -284,10 +316,19 @@ export class ToolReferenceTracker {
   }
 
   consumeSubmitted(text: string): ToolReference[] {
-    if (!this.submitted || this.submitted.text !== text) return [];
-    const references = this.submitted.references.filter((reference) => text.slice(reference.start, reference.end) === reference.name);
+    const submitted = this.submitted;
     this.submitted = undefined;
-    return references;
+    if (!submitted) return [];
+    // Editor submission trims surrounding whitespace (including the completion's
+    // trailing space). Keep tag positions aligned with that submitted text.
+    let shift = 0;
+    if (submitted.text !== text) {
+      if (submitted.text.trim() !== text) return [];
+      shift = submitted.text.length - submitted.text.trimStart().length;
+    }
+    return submitted.references
+      .map((reference) => ({ ...reference, start: reference.start - shift, end: reference.end - shift }))
+      .filter((reference) => reference.start >= 0 && text.slice(reference.start, reference.end) === reference.name);
   }
 
   hasNameAt(text: string, reference: ToolReference): boolean {

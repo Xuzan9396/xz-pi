@@ -11,6 +11,7 @@ import {
   readGlobalScopedModelsState,
   resolveGlobalScopedModelsState,
   resolveScopedPattern,
+  saveGlobalScopedModels,
   toggleGlobalScopedModel,
 } from "../src/scoped-models.js";
 
@@ -93,6 +94,33 @@ test("writes the official global enabledModels field and preserves defaults, pro
   await official.reload();
   assert.deepEqual(official.getGlobalSettings().enabledModels, ["a/sonnet", "a/opus"]);
   assert.deepEqual(official.getEnabledModels(), ["b/gpt"]);
+});
+
+test("complete saves retain configured references unavailable in this process", async (t) => {
+  const f = fixture(t);
+  f.write(f.paths.global, {
+    enabledModels: ["a/sonnet", "openai-xuzan/gpt-5.6-sol", "future/*:high"],
+    custom: true,
+  });
+  await saveGlobalScopedModels(f.paths, models, [], ["a/sonnet", "b/gpt"]);
+  assert.deepEqual(JSON.parse(readFileSync(f.paths.global, "utf8")), {
+    enabledModels: ["a/sonnet", "b/gpt", "openai-xuzan/gpt-5.6-sol", "future/*:high"],
+    custom: true,
+  });
+});
+
+test("selecting every available model clears scope only when no unavailable references remain", async (t) => {
+  const restricted = fixture(t);
+  restricted.write(restricted.paths.global, { enabledModels: ["openai-xuzan/gpt-5.6-sol"] });
+  await saveGlobalScopedModels(restricted.paths, models, [], models.map(modelKey));
+  assert.deepEqual(JSON.parse(readFileSync(restricted.paths.global, "utf8")).enabledModels, [
+    ...models.map(modelKey), "openai-xuzan/gpt-5.6-sol",
+  ]);
+
+  const unrestricted = fixture(t);
+  unrestricted.write(unrestricted.paths.global, { enabledModels: ["a/sonnet"] });
+  await saveGlobalScopedModels(unrestricted.paths, models, [], models.map(modelKey));
+  assert.deepEqual(JSON.parse(readFileSync(unrestricted.paths.global, "utf8")), {});
 });
 
 test("removing one glob member preserves other globs, unavailable IDs, order and thinking levels", async (t) => {

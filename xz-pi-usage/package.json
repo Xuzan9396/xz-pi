@@ -1,7 +1,7 @@
 {
   "name": "xz-pi-usage",
   "version": "0.1.0",
-  "description": "Show Pi subscription quota windows, reset times, and Copilot AI credits",
+  "description": "Show Pi subscription quota for the physical account serving the selected model",
   "type": "module",
   "keywords": [
     "pi-package",
@@ -40,12 +40,12 @@
     ]
   },
   "peerDependencies": {
-    "@earendil-works/pi-coding-agent": "*",
-    "@earendil-works/pi-tui": ">=0.84.4"
+    "@earendil-works/pi-coding-agent": ">=1.1.0",
+    "@earendil-works/pi-tui": ">=1.1.0"
   },
   "devDependencies": {
-    "@earendil-works/pi-coding-agent": "0.84.4",
-    "@earendil-works/pi-tui": "0.84.4",
+    "@earendil-works/pi-coding-agent": "1.1.0",
+    "@earendil-works/pi-tui": "1.1.0",
     "@types/node": "^22.0.0",
     "tsx": "^4.20.0",
     "typescript": "^5.9.0"

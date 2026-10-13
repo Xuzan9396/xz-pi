@@ -9,7 +9,7 @@ const HOSTS: Record<string, string> = {
 export async function fetchMinimaxUsage(ctx: UsageContext, providerId = "minimax", deps: ProviderDeps = {}): Promise<UsageSnapshot> {
   const now = deps.now?.() ?? Date.now();
   try {
-    const host = HOSTS[providerId];
+    const host = HOSTS[deps.baseProviderId ?? providerId];
     if (!host) throw new Error("unsupported provider");
     const key = await apiKey(ctx, providerId, deps.readCredential);
     if (key.startsWith("sk-api-")) throw new NotConnectedError();

@@ -4,10 +4,13 @@ import type {
   ExtensionCommandContext,
   ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
+import { Key } from "@earendil-works/pi-tui";
 import { PModelSelectorComponent, type SelectorAction } from "./src/model-selector.js";
 import { reconcileProjectConfiguration } from "./src/configuration.js";
+import { filterAuthenticatedModels, readAuthProviderIds } from "./src/auth-providers.js";
 import {
   clearProjectOverride,
+  cleanupAuthenticatedPreferences,
   getPreferencePaths,
   readPreferenceLayers,
   resolvePreferences,
@@ -16,20 +19,26 @@ import {
 } from "./src/preferences.js";
 import {
   clearProjectModelDefault,
+  cleanupInvalidModelDefaults,
   getPiSettingsPaths,
   readPiSettingsLayers,
   resolveModelDefaultState,
   toggleModelDefault,
 } from "./src/pi-settings.js";
-import { cleanupGlobalScopedModels, resolveGlobalScopedModelsState, toggleGlobalScopedModel } from "./src/scoped-models.js";
+import {
+  cleanupGlobalScopedModels,
+  resolveGlobalScopedModelsState,
+  resolveScopedPattern,
+  saveGlobalScopedModels,
+} from "./src/scoped-models.js";
 
 async function applyAction(
   pi: ExtensionAPI,
-  ctx: ExtensionCommandContext,
+  ctx: ExtensionContext,
   action: SelectorAction,
   paths: ReturnType<typeof getPiSettingsPaths>,
 ): Promise<boolean> {
-  if (action.type === "cancel") return false;
+  if (action.type === "cancel" || action.type === "save-global-scope") return false;
 
   if ("model" in action) {
     const catalog = ctx.modelRegistry.getAll();
@@ -61,6 +70,47 @@ async function applyAction(
   return true;
 }
 
+async function synchronizeScopedModels(
+  ctx: ExtensionCommandContext,
+  paths: ReturnType<typeof getPiSettingsPaths>,
+): Promise<boolean> {
+  const sessionFile = ctx.sessionManager.getSessionFile();
+  if (!sessionFile) return false;
+  const result = await ctx.switchSession(sessionFile, {
+    withSession(freshContext) {
+      const projectTrusted = freshContext.isProjectTrusted();
+      const settings = readPiSettingsLayers(paths, { projectTrusted });
+      const providerIds = readAuthProviderIds();
+      const availableModels = filterAuthenticatedModels(freshContext.modelRegistry.getAvailable(), providerIds);
+      const sessionModels = filterAuthenticatedModels(freshContext.scopedModels.map(({ model }) => model), providerIds);
+      const state = resolveGlobalScopedModelsState(
+        settings.global,
+        settings.project,
+        availableModels,
+        sessionModels,
+        projectTrusted,
+      );
+      const unresolvedExact = (settings.global.enabledModels ?? []).filter((pattern) => {
+        const reference = pattern.trim();
+        const slash = reference.indexOf("/");
+        const isPattern = /[*?\[\]{}]/.test(reference) || /[+@!]\(/.test(reference);
+        return slash > 0 && !isPattern && resolveScopedPattern(pattern, availableModels).length === 0;
+      });
+      const synchronized = !state.sessionDiffers && unresolvedExact.length === 0;
+      freshContext.ui.notify(
+        synchronized
+          ? "Global scoped selection saved and synchronized with /model, /scoped-models and model cycling."
+          : unresolvedExact.length > 0
+            ? `Global scoped selection saved, but these account models are still unavailable: ${unresolvedExact.join(", ")}.`
+            : "Global scoped selection saved, but project enabledModels or startup --models still controls this session.",
+        synchronized ? "info" : "warning",
+      );
+      return Promise.resolve();
+    },
+  });
+  return !result.cancelled;
+}
+
 export function createPModelExtension() {
   return function pmodelExtension(pi: ExtensionAPI): void {
     let scopeWrites = Promise.resolve();
@@ -75,19 +125,25 @@ export function createPModelExtension() {
       catalog: readonly Model<any>[],
       catalogError?: string,
     ): Promise<void> => {
+      const providerIds = readAuthProviderIds();
       const result = await cleanupGlobalScopedModels(
         getPiSettingsPaths(ctx.cwd),
-        catalog,
-        catalogError ? { catalogError } : {},
+        filterAuthenticatedModels(catalog, providerIds),
+        {
+          availableModels: filterAuthenticatedModels(ctx.modelRegistry.getAvailable(), providerIds),
+          registeredProviders: providerIds,
+          authoritativeProviders: true,
+          ...(catalogError ? { catalogError } : {}),
+        },
       );
       if (!ctx.hasUI) return;
       if (result.removedPatterns.length > 0) {
         ctx.ui.notify(
           `Cleaned global enabledModels: ${result.removedPatterns.join(", ")}. Restart Pi to refresh the active scope.`,
-          "info",
+          "warning",
         );
       } else if (result.skippedReason) {
-        ctx.ui.notify(`Automatic global scope cleanup skipped: ${result.skippedReason}`, "warning");
+        ctx.ui.notify(`Automatic global scope cleanup skipped: ${catalogError ?? result.skippedReason}`, "warning");
       }
     };
     const reportCleanupFailure = (ctx: ExtensionContext, error: unknown): void => {
@@ -100,23 +156,39 @@ export function createPModelExtension() {
       let refreshError: string | undefined;
       if (refreshCatalog) {
         try {
-          const refresh = await ctx.modelRegistry.refresh({ allowNetwork: false, signal: AbortSignal.timeout(5_000) });
+          // Match the official /scoped-models refresh path. Dynamic account
+          // providers may have no models in a newly started process until their
+          // network-backed catalog has been refreshed.
+          const refresh = await ctx.modelRegistry.refresh({ allowNetwork: true, signal: AbortSignal.timeout(15_000) });
           if (refresh.aborted || refresh.errors.size > 0) refreshError = "Model catalog refresh did not complete reliably.";
         } catch {
           refreshError = "Model catalog refresh failed; configured references were retained.";
         }
       }
-      const catalog = ctx.modelRegistry.getAll();
+      const providerIds = readAuthProviderIds();
+      const catalog = filterAuthenticatedModels(ctx.modelRegistry.getAll(), providerIds);
+      const paths = getPiSettingsPaths(ctx.cwd);
       const catalogError = refreshError ?? ctx.modelRegistry.getError();
       // Global scope maintenance must not be blocked by malformed project data.
       try {
         await cleanupGlobalScope(ctx, catalog, catalogError);
+        if (!catalogError) {
+          const removedDefaults = cleanupInvalidModelDefaults(paths, catalog, providerIds, { projectTrusted: ctx.isProjectTrusted() });
+          for (const removed of removedDefaults) {
+            pendingDefaultsReload = true;
+            if (!ctx.hasUI) continue;
+            ctx.ui.notify(removed.kind === "provider"
+              ? `Provider ${removed.provider} has been deleted; choose a new provider and model.`
+              : `Model ${removed.provider}/${removed.id ?? "unknown"} has been deleted; choose a new model.`, "warning");
+          }
+        }
       } catch (error) {
         reportCleanupFailure(ctx, error);
       }
+      cleanupAuthenticatedPreferences(getPreferencePaths(ctx.cwd), catalog, providerIds, { projectTrusted: ctx.isProjectTrusted() });
       const result = (() => {
         try {
-          return reconcileProjectConfiguration(getPreferencePaths(ctx.cwd), getPiSettingsPaths(ctx.cwd), catalog,
+          return reconcileProjectConfiguration(getPreferencePaths(ctx.cwd), paths, catalog,
             { projectTrusted: ctx.isProjectTrusted(), ...(catalogError ? { catalogError } : {}) });
         } catch (error) {
           if (error instanceof Error && "settingsChanged" in error && error.settingsChanged === true) pendingDefaultsReload = true;
@@ -139,28 +211,36 @@ export function createPModelExtension() {
     };
 
     pi.on("session_start", async (_event, ctx) => {
-      try {
-        await serializeScopeWrite(() => maintainConfiguration(ctx, false));
-      } catch (error) {
-        reportCleanupFailure(ctx, error);
-      }
+      try { await serializeScopeWrite(() => maintainConfiguration(ctx, false)); }
+      catch (error) { reportCleanupFailure(ctx, error); }
     });
 
-    pi.registerCommand("pmodel", {
-      description: "Select and organize models by provider without replacing /model",
-      handler: async (args, ctx) => {
-        if (ctx.mode !== "tui") {
-          ctx.ui.notify("/pmodel requires TUI mode", "error");
-          return;
-        }
+    let pickerOpen = false;
+    const openPModel = async (
+      args: string,
+      ctx: ExtensionContext,
+      reloadDefaults?: () => Promise<void>,
+      synchronizeScope?: () => Promise<boolean>,
+    ): Promise<void> => {
+      if (ctx.mode !== "tui") {
+        ctx.ui.notify("/pmodel requires TUI mode", "error");
+        return;
+      }
+      if (pickerOpen) {
+        ctx.ui.notify("/pmodel is already open", "info");
+        return;
+      }
 
+      pickerOpen = true;
+      try {
         try {
           await serializeScopeWrite(() => maintainConfiguration(ctx, true));
         } catch (error) {
           reportCleanupFailure(ctx, error);
         }
 
-        const allModels = ctx.modelRegistry.getAvailable();
+        const providerIds = readAuthProviderIds();
+        const allModels = filterAuthenticatedModels(ctx.modelRegistry.getAvailable(), providerIds);
         if (allModels.length === 0) {
           ctx.ui.notify("No models are available. Use /login to configure a provider.", "warning");
           return;
@@ -174,7 +254,7 @@ export function createPModelExtension() {
         };
         const projectTrusted = ctx.isProjectTrusted();
         const piSettings = readPiSettingsLayers(piSettingsPaths, { projectTrusted });
-        const sessionScopedModels = ctx.scopedModels.map((item) => item.model);
+        const sessionScopedModels = filterAuthenticatedModels(ctx.scopedModels.map((item) => item.model), providerIds);
         const globalScope = resolveGlobalScopedModelsState(
           piSettings.global, piSettings.project, allModels, sessionScopedModels, projectTrusted,
         );
@@ -205,24 +285,12 @@ export function createPModelExtension() {
                   if (!fresh && !ctx.modelRegistry.getError() && catalog.length > 0) {
                     throw new Error("This model was removed while the picker was open. Reopen /pmodel.");
                   }
-                  const result = await toggleModelDefault(piSettingsPaths, layer, fresh ?? model, { projectTrusted: ctx.isProjectTrusted() });
+                  const result = await toggleModelDefault(piSettingsPaths, layer, fresh ?? model, {
+                    projectTrusted: ctx.isProjectTrusted(),
+                  });
                   pendingDefaultsReload ||= result.changed;
                   return result.defaults;
                 });
-              },
-              async onToggleGlobalScope(model) {
-                const state = await serializeScopeWrite(async () => {
-                  await maintainConfiguration(ctx, true);
-                  return toggleGlobalScopedModel(
-                    piSettingsPaths, ctx.modelRegistry.getAvailable(), sessionScopedModels, model, projectTrusted,
-                  );
-                });
-                ctx.ui.notify(
-                  "Global scoped selection saved. Restart Pi (pi -c) to sync /model, /scoped-models and cycling; /reload is not enough." +
-                  (state.projectOverride ? " Project enabledModels still overrides global scope." : ""),
-                  "info",
-                );
-                return state;
               },
               onPreferenceChange(layer, override) {
                 if (layer === "project" && !ctx.isProjectTrusted()) throw new Error("Project trust is required to save visibility");
@@ -243,20 +311,63 @@ export function createPModelExtension() {
 
         try {
           await serializeScopeWrite(() => maintainConfiguration(ctx, true));
+          if (action.type === "save-global-scope") {
+            const availableModels = filterAuthenticatedModels(ctx.modelRegistry.getAvailable(), readAuthProviderIds());
+            const state = await serializeScopeWrite(() => saveGlobalScopedModels(
+              piSettingsPaths,
+              availableModels,
+              sessionScopedModels,
+              action.modelIds,
+              projectTrusted,
+            ));
+            if (synchronizeScope && await synchronizeScope()) return;
+            if (state.projectOverride) {
+              ctx.ui.notify(
+                "Global scoped selection saved, but project enabledModels overrides it in this project.",
+                "warning",
+              );
+            }
+            ctx.ui.notify(
+              "Global scoped selection saved. Restart Pi to synchronize /model, /scoped-models and model cycling.",
+              "warning",
+            );
+            return;
+          }
           const defaultsChanged = await applyAction(pi, ctx, action, piSettingsPaths);
           pendingDefaultsReload ||= defaultsChanged;
         } catch (error) {
           ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
         }
         if (pendingDefaultsReload) {
+          if (!reloadDefaults) {
+            ctx.ui.notify("Default changes were saved. Run /reload to refresh Pi's default caches.", "warning");
+            return;
+          }
           try {
-            await ctx.reload();
+            await reloadDefaults();
           } catch (error) {
             ctx.ui.notify(`Could not reload default caches: ${error instanceof Error ? error.message : String(error)}`, "error");
           }
           return;
         }
-      },
+      } finally {
+        pickerOpen = false;
+      }
+    };
+
+    pi.registerShortcut(Key.ctrlShift("e"), {
+      description: "Open the provider-grouped model picker",
+      handler: async (ctx) => openPModel("", ctx),
+    });
+
+    pi.registerCommand("pmodel", {
+      description: "Select and organize models by provider without replacing /model",
+      handler: async (args, ctx) => openPModel(
+        args,
+        ctx,
+        () => ctx.reload(),
+        () => synchronizeScopedModels(ctx, getPiSettingsPaths(ctx.cwd)),
+      ),
     });
   };
 }

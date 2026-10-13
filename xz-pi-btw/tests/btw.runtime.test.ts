@@ -1,0 +1,3850 @@
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext, RegisteredCommand } from "@earendil-works/pi-coding-agent";
+import { visibleWidth } from "@earendil-works/pi-tui";
+import btwExtension, {
+  describeFocusShortcuts,
+  isValidFocusShortcut,
+  resolveBtwFocusShortcuts,
+} from "../extensions/btw";
+
+const {
+  promptStreamMock,
+  createAgentSessionMock,
+  sessionManagerInMemoryMock,
+  modelRuntimeExport,
+  modelRuntimeCreateMock,
+  modelRuntimeRecords,
+  subSessionRecords,
+  readBtwExtensionSourcesMock,
+  loadBtwExtensionResourcesMock,
+} = vi.hoisted(() => ({
+  promptStreamMock: vi.fn(),
+  createAgentSessionMock: vi.fn(),
+  sessionManagerInMemoryMock: vi.fn(() => {
+    const messages: any[] = [];
+    return {
+      type: "in-memory-session",
+      appendMessage: vi.fn((message: any) => {
+        messages.push(structuredClone(message));
+        return `entry-${messages.length}`;
+      }),
+      buildSessionContext: vi.fn(() => ({ messages: messages.map((message) => structuredClone(message)) })),
+    };
+  }),
+  modelRuntimeExport: {} as { create: ReturnType<typeof vi.fn> },
+  modelRuntimeCreateMock: vi.fn(),
+  modelRuntimeRecords: [] as Array<{
+    registerProvider: ReturnType<typeof vi.fn>;
+    registerNativeProvider: ReturnType<typeof vi.fn>;
+    refresh: ReturnType<typeof vi.fn>;
+    setRuntimeApiKey: ReturnType<typeof vi.fn>;
+  }>,
+  subSessionRecords: [] as Array<{
+    options: any;
+    session: any;
+    seedMessages: any[];
+    promptCalls: Array<{ text: string; context: StreamContext }>;
+    emit: (event: any) => void;
+    getListenerCount: () => number;
+    getIsStreaming: () => boolean;
+  }>,
+  readBtwExtensionSourcesMock: vi.fn(),
+  loadBtwExtensionResourcesMock: vi.fn(),
+}));
+
+vi.mock("../extensions/btw-extension-tools", () => ({
+  readBtwExtensionSources: readBtwExtensionSourcesMock,
+  loadBtwExtensionResources: loadBtwExtensionResourcesMock,
+}));
+
+const markdownTheme = {
+  heading: (text: string) => `<heading>${text}</heading>`,
+  link: (text: string) => text,
+  linkUrl: (text: string) => text,
+  code: (text: string) => text,
+  codeBlock: (text: string) => text,
+  codeBlockBorder: (text: string) => text,
+  quote: (text: string) => text,
+  quoteBorder: (text: string) => text,
+  hr: (text: string) => text,
+  listBullet: (text: string) => text,
+  bold: (text: string) => `<bold>${text}</bold>`,
+  italic: (text: string) => `<italic>${text}</italic>`,
+  strikethrough: (text: string) => text,
+  underline: (text: string) => text,
+};
+
+vi.mock("@earendil-works/pi-coding-agent", async () => {
+  const actual = await vi.importActual<typeof import("@earendil-works/pi-coding-agent")>("@earendil-works/pi-coding-agent");
+  return {
+    ...actual,
+    createAgentSession: createAgentSessionMock,
+    getMarkdownTheme: () => markdownTheme,
+    ModelRuntime: modelRuntimeExport,
+    SessionManager: {
+      ...actual.SessionManager,
+      inMemory: sessionManagerInMemoryMock,
+    },
+  };
+});
+
+type CustomEntry = { type: "custom"; customType: string; data?: unknown };
+type SessionEntry = CustomEntry | { type: string; role?: string; customType?: string; content?: unknown; [key: string]: unknown };
+
+type TestAuthResult =
+  | { ok: true; apiKey?: string; headers?: Record<string, string>; env?: Record<string, string> }
+  | { ok: false; error: string };
+
+type StreamContext = {
+  systemPrompt: string;
+  messages: Array<{ role: string; content: Array<{ type: string; text?: string; thinking?: string }> }>;
+};
+
+type PromptStreamEvent =
+  | { type: "thinking_delta"; delta: string }
+  | { type: "text_delta"; delta: string }
+  | { type: "tool_execution_start"; toolName: string; args?: unknown }
+  | { type: "tool_execution_end"; toolName: string; result?: unknown; isError?: boolean }
+  | { type: "done"; message: ReturnType<typeof makeAssistantMessage> }
+  | { type: "error"; error: ReturnType<typeof makeAssistantMessage> };
+
+class FakeOverlayHandle {
+  hidden = false;
+  focused = false;
+  hideCalls = 0;
+  setHidden(hidden: boolean) {
+    this.hidden = hidden;
+  }
+  isHidden() {
+    return this.hidden;
+  }
+  focus() {
+    this.focused = true;
+  }
+  unfocus() {
+    this.focused = false;
+  }
+  isFocused() {
+    return this.focused;
+  }
+  hide() {
+    this.hideCalls += 1;
+    this.hidden = true;
+    this.focused = false;
+  }
+}
+
+const tuiMocks = vi.hoisted(() => {
+  class FakeInput {
+    value = "";
+    focused = false;
+    onSubmit?: (value: string) => void;
+    onEscape?: () => void;
+    setValue(value: string) {
+      this.value = value;
+    }
+    getValue() {
+      return this.value;
+    }
+    render(_width: number) {
+      return [`> ${this.value}`];
+    }
+    handleInput(_data: string) {}
+    invalidate() {}
+  }
+
+  class FakeContainer {
+    children: unknown[] = [];
+    addChild(child: unknown) {
+      this.children.push(child);
+    }
+    clear() {
+      this.children = [];
+    }
+  }
+
+  class FakeText {
+    constructor(public text: string) {}
+    setText(text: string) {
+      this.text = text;
+    }
+  }
+
+  class FakeSpacer {}
+  class FakeBox extends FakeContainer {}
+
+  return { FakeInput, FakeContainer, FakeText, FakeSpacer, FakeBox };
+});
+
+vi.mock("@earendil-works/pi-tui", async () => {
+  const actual = await vi.importActual<typeof import("@earendil-works/pi-tui")>("@earendil-works/pi-tui");
+  return {
+    ...actual,
+    Container: tuiMocks.FakeContainer,
+    Text: tuiMocks.FakeText,
+    Input: tuiMocks.FakeInput,
+    Spacer: tuiMocks.FakeSpacer,
+    Box: tuiMocks.FakeBox,
+  };
+});
+
+function makeAssistantMessage(answer: string) {
+  return {
+    role: "assistant",
+    content: [{ type: "text" as const, text: answer }],
+    provider: "test-provider",
+    model: "test-model",
+    api: "openai-responses" as const,
+    usage: {
+      input: 1,
+      output: 1,
+      cacheRead: 0,
+      cacheWrite: 0,
+      totalTokens: 2,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+    },
+    stopReason: "stop" as const,
+    timestamp: Date.now(),
+  };
+}
+
+async function* streamAnswer(answer: string) {
+  yield { type: "text_delta" as const, delta: answer.slice(0, Math.max(1, Math.floor(answer.length / 2))) };
+  yield { type: "text_delta" as const, delta: answer.slice(Math.max(1, Math.floor(answer.length / 2))) };
+  yield { type: "done" as const, message: makeAssistantMessage(answer) };
+}
+
+function createBlockingToolStream() {
+  let release!: () => void;
+  const blocked = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+
+  return {
+    release,
+    stream: async function* () {
+      yield { type: "tool_execution_start" as const, toolName: "read", args: { path: "package.json" } };
+      await blocked;
+      yield {
+        type: "error" as const,
+        error: {
+          ...makeAssistantMessage(""),
+          stopReason: "aborted" as const,
+        },
+      };
+    },
+  };
+}
+
+function createBlockingPartialAbortStream() {
+  let release!: () => void;
+  const blocked = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+
+  return {
+    release,
+    stream: async function* () {
+      yield { type: "text_delta" as const, delta: "Partial answer" };
+      await blocked;
+      yield {
+        type: "error" as const,
+        error: {
+          ...makeAssistantMessage("Partial answer"),
+          stopReason: "aborted" as const,
+        },
+      };
+    },
+  };
+}
+
+function createBlockingSuccessStream(answer: string) {
+  let release!: () => void;
+  const blocked = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+
+  return {
+    release,
+    stream: async function* () {
+      yield { type: "thinking_delta" as const, delta: "Inspecting package.json" };
+      yield { type: "tool_execution_start" as const, toolName: "read", args: { path: "package.json" } };
+      await blocked;
+      yield {
+        type: "tool_execution_end" as const,
+        toolName: "read",
+        result: { content: [{ type: "text", text: '{"name":"pi-btw"}' }] },
+      };
+      yield { type: "text_delta" as const, delta: answer };
+      yield {
+        type: "done" as const,
+        message: {
+          ...makeAssistantMessage(answer),
+          content: buildAssistantContent("Inspecting package.json", answer),
+        },
+      };
+    },
+  };
+}
+
+function createStreamingFailureStream() {
+  let release!: () => void;
+  const blocked = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+
+  return {
+    release,
+    stream: async function* () {
+      yield { type: "thinking_delta" as const, delta: "Inspecting package.json" };
+      yield { type: "tool_execution_start" as const, toolName: "read", args: { path: "package.json" } };
+      await blocked;
+      yield {
+        type: "tool_execution_end" as const,
+        toolName: "read",
+        result: { content: [{ type: "text", text: '{"name":"pi-btw"}' }] },
+      };
+      yield {
+        type: "error" as const,
+        error: {
+          ...makeAssistantMessage(""),
+          stopReason: "error" as const,
+          errorMessage: "Sub-session prompt exploded",
+        },
+      };
+    },
+  };
+}
+
+function createBlockingAnswerStream(answer: string) {
+  let release!: () => void;
+  const blocked = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const firstChunkLength = Math.max(1, Math.floor(answer.length / 2));
+
+  return {
+    release,
+    stream: async function* () {
+      yield { type: "text_delta" as const, delta: answer.slice(0, firstChunkLength) };
+      await blocked;
+      yield { type: "text_delta" as const, delta: answer.slice(firstChunkLength) };
+      yield {
+        type: "done" as const,
+        message: makeAssistantMessage(answer),
+      };
+    },
+  };
+}
+
+function buildAssistantContent(thinking: string, answer: string) {
+  const content: Array<{ type: "thinking"; thinking: string } | { type: "text"; text: string }> = [];
+  if (thinking) {
+    content.push({ type: "thinking", thinking });
+  }
+  if (answer) {
+    content.push({ type: "text", text: answer });
+  }
+  return content;
+}
+
+function buildMockSystemPrompt(options: any): string {
+  const systemPrompt = options.resourceLoader?.getSystemPrompt?.();
+  const appendSystemPrompt = options.resourceLoader?.getAppendSystemPrompt?.() ?? [];
+  return [systemPrompt, ...appendSystemPrompt].filter(Boolean).join("\n\n");
+}
+
+function createMockAgentSession(options: any) {
+  const listeners = new Set<(event: any) => void>();
+  const seedMessages: any[] = (options.sessionManager?.buildSessionContext?.().messages ?? []).map((message: any) =>
+    structuredClone(message),
+  );
+  let stateMessages: any[] = seedMessages.map((message: any) => structuredClone(message));
+  let isStreaming = false;
+  let activeTools: string[] = [...(options.tools ?? [])];
+
+  const emit = (event: any) => {
+    for (const listener of listeners) {
+      listener(event);
+    }
+  };
+
+  const record = {
+    options,
+    seedMessages,
+    promptCalls: [] as Array<{ text: string; context: StreamContext }>,
+    emit,
+    getListenerCount: () => listeners.size,
+    getIsStreaming: () => isStreaming,
+    session: null as any,
+  };
+
+  const session = {
+    agent: {
+      state: {
+        get messages() {
+          return stateMessages;
+        },
+      },
+    },
+    state: {
+      get messages() {
+        return stateMessages;
+      },
+      model: options.model,
+      tools: (options.tools ?? []).map((name: string) => ({ name })),
+    },
+    get model() {
+      return options.model;
+    },
+    get isStreaming() {
+      return isStreaming;
+    },
+    subscribe: vi.fn((listener: (event: any) => void) => {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    }),
+    prompt: vi.fn(async (text: string) => {
+      const userMessage = {
+        role: "user",
+        content: [{ type: "text" as const, text }],
+        timestamp: Date.now(),
+      };
+      const context: StreamContext = {
+        systemPrompt: buildMockSystemPrompt(options),
+        messages: [...stateMessages.map((message) => structuredClone(message)), userMessage],
+      };
+      record.promptCalls.push({ text, context });
+
+      emit({ type: "turn_start" });
+      emit({ type: "message_start", message: userMessage });
+      emit({ type: "message_end", message: userMessage });
+
+      const stream = promptStreamMock(record, text, context) as AsyncIterable<PromptStreamEvent>;
+      let assistantStarted = false;
+      let thinking = "";
+      let answer = "";
+      let finalMessage: ReturnType<typeof makeAssistantMessage> | null = null;
+      const toolResults: Array<{ toolName: string; result: unknown; isError: boolean }> = [];
+
+      const emitAssistantUpdate = (assistantMessageEvent: PromptStreamEvent) => {
+        const assistantMessage = {
+          ...makeAssistantMessage(answer),
+          content: buildAssistantContent(thinking, answer),
+        };
+
+        if (!assistantStarted) {
+          assistantStarted = true;
+          emit({ type: "message_start", message: assistantMessage });
+        }
+
+        emit({ type: "message_update", message: assistantMessage, assistantMessageEvent });
+      };
+
+      isStreaming = true;
+      for await (const event of stream) {
+        if (event.type === "thinking_delta") {
+          thinking += event.delta;
+          emitAssistantUpdate(event);
+          continue;
+        }
+
+        if (event.type === "text_delta") {
+          answer += event.delta;
+          emitAssistantUpdate(event);
+          continue;
+        }
+
+        if (event.type === "tool_execution_start") {
+          emit({ type: "tool_execution_start", toolCallId: `call-${record.promptCalls.length}`, toolName: event.toolName, args: event.args ?? {} });
+          continue;
+        }
+
+        if (event.type === "tool_execution_end") {
+          toolResults.push({ toolName: event.toolName, result: event.result, isError: event.isError ?? false });
+          emit({
+            type: "tool_execution_end",
+            toolCallId: `call-${record.promptCalls.length}`,
+            toolName: event.toolName,
+            result: event.result,
+            isError: event.isError ?? false,
+          });
+          continue;
+        }
+
+        finalMessage = event.type === "done" ? event.message : event.error;
+      }
+      isStreaming = false;
+
+      if (!finalMessage) {
+        finalMessage = makeAssistantMessage(answer);
+      }
+
+      if (!assistantStarted) {
+        emit({ type: "message_start", message: finalMessage });
+      }
+      emit({ type: "message_end", message: finalMessage });
+      emit({ type: "turn_end", message: finalMessage, toolResults });
+      stateMessages = [...context.messages.map((message) => structuredClone(message)), structuredClone(finalMessage)];
+    }),
+    abort: vi.fn(async () => {
+      isStreaming = false;
+    }),
+    dispose: vi.fn(() => {
+      listeners.clear();
+    }),
+    bindExtensions: vi.fn(async () => {}),
+    extensionRunner: { emit: vi.fn(async () => {}) },
+    setActiveToolsByName: vi.fn((tools: string[]) => { activeTools = tools; }),
+    getActiveToolNames: vi.fn(() => activeTools),
+  };
+
+  record.session = session;
+  subSessionRecords.push(record);
+  return { session, extensionsResult: options.resourceLoader.getExtensions() };
+}
+
+async function flushAsyncWork() {
+  await Promise.resolve();
+  await Promise.resolve();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+function getCustomEntries(entries: SessionEntry[], customType: string): CustomEntry[] {
+  return entries.filter((entry): entry is CustomEntry => entry.type === "custom" && entry.customType === customType);
+}
+
+function transcriptText(overlay: any): string {
+  overlay.refresh();
+  return overlay.transcript.children.map((child: any) => child.text).join("\n");
+}
+
+function transcriptEntries(overlay: any) {
+  overlay.refresh();
+  return overlay.getTranscriptEntries();
+}
+
+function findLatest<T>(items: T[], predicate: (item: T) => boolean): T {
+  const match = [...items].reverse().find(predicate);
+  if (!match) throw new Error("Expected matching item");
+  return match;
+}
+
+function createHarness(
+  initialEntries: SessionEntry[] = [],
+  options: {
+    theme?: {
+      fg: (name: string, text: string) => string;
+      bg: (name: string, text: string) => string;
+      italic: (text: string) => string;
+      bold: (text: string) => string;
+    };
+    keybindingMatches?: (data: string, id: string) => boolean;
+    tuiMode?: "regular" | "fullscreen";
+    contextMode?: "tui" | "rpc" | "json" | "print";
+    tui?: any;
+  } = {},
+) {
+  const commands = new Map<string, RegisteredCommand>();
+  const shortcuts = new Map<string, any>();
+  const messageRenderers = new Map<string, any>();
+  const handlers = new Map<string, Function[]>();
+  const entries: SessionEntry[] = [...initialEntries];
+  const notifications: Array<{ message: string; type?: string }> = [];
+  const widgets: Array<{ key: string; content?: unknown; options?: unknown }> = [];
+  const sentMessages: Array<{ message: unknown; options?: unknown }> = [];
+  const sentUserMessages: Array<{ content: unknown; options?: unknown }> = [];
+  const overlayHandles: FakeOverlayHandle[] = [];
+  const overlays: Array<{ factoryOptions?: unknown; done?: (result: unknown) => void; component?: any }> = [];
+  const terminalWrites: string[] = [];
+  const tui = options.tui ?? {
+    requestRender: vi.fn(),
+    terminal: { write: (data: string) => terminalWrites.push(data) },
+    mode: options.tuiMode,
+  };
+  const theme = options.theme ?? {
+    fg: (_name: string, text: string) => text,
+    bg: (_name: string, text: string) => text,
+    italic: (text: string) => text,
+    bold: (text: string) => text,
+  };
+  const keybindings = {
+    matches: options.keybindingMatches ?? ((_data: string, _id: string) => false),
+  };
+
+  const sessionManager = {
+    getEntries: () => entries,
+    getLeafId: () => "leaf",
+    getBranch: () => entries,
+  };
+
+  const model = { provider: "test-provider", id: "test-model", api: "openai-responses" };
+  let idle = true;
+  let hasCredentials = true;
+  let mainThinkingLevel: string = "off";
+  let credentialSource: string | undefined;
+  let authResolver: ((model: { provider: string; id: string; api: string }) => TestAuthResult | Promise<TestAuthResult>) | null = null;
+  let configuredAuthResolver: ((model: { provider: string; id: string; api: string }) => boolean) | null = null;
+  let credentialResolver: ((model: { provider: string; id: string; api: string }) => string | undefined) | null = null;
+  // Models that ctx.modelRegistry.find(provider, id) should return for /btw:model resolution.
+  // Tests that exercise overrides should call harness.registerModel(...) so the resolved
+  // Model.api preserves the value the test cares about (otherwise we synthesize a default).
+  const registeredModels = new Map<string, { provider: string; id: string; api: string }>();
+  const registeredProviderConfigs = new Map<string, unknown>();
+  const registeredNativeProviders = new Map<string, unknown>();
+  const modelRegistryRuntime = {
+    registeredProviderConfigs,
+    registeredNativeProviders,
+    getCredentialSource: () => credentialSource,
+  };
+  // Pre-register the common BTW override fixture used by most tests.
+  registeredModels.set("fast-provider/fast-model", { provider: "fast-provider", id: "fast-model", api: "custom-api" });
+  const mainSessionInputs: string[] = [];
+
+  const ui = {
+    theme,
+    notify: (message: string, type?: "info" | "warning" | "error") => {
+      notifications.push({ message, type });
+    },
+    setWidget: (key: string, content: unknown, options?: unknown) => {
+      widgets.push({ key, content, options });
+    },
+    custom: async (factory: any, options?: any) => {
+      let done!: (result: unknown) => void;
+      let component: any;
+      const resultPromise = new Promise((resolve) => {
+        done = (result: unknown) => {
+          // Match pi's custom-overlay close callback: pop the topmost overlay,
+          // then dispose the component after resolving the custom UI promise.
+          overlayHandles.at(-1)?.hide();
+          component?.dispose?.();
+          resolve(result);
+        };
+      });
+      const handle = new FakeOverlayHandle();
+      overlayHandles.push(handle);
+      options?.onHandle?.(handle);
+      component = await factory(tui as any, theme as any, keybindings as any, done);
+      overlays.push({ factoryOptions: options, done, component });
+      return resultPromise;
+    },
+    onTerminalInput: () => () => {},
+    setStatus: () => {},
+    setWorkingMessage: () => {},
+    setFooter: () => {},
+    setHeader: () => {},
+    setTitle: () => {},
+    pasteToEditor: () => {},
+    setEditorText: () => {},
+    getEditorText: () => "",
+    editor: async () => undefined,
+    setEditorComponent: () => {},
+    getAllThemes: () => [],
+    getTheme: () => undefined,
+    setTheme: () => ({ success: true }),
+    getToolsExpanded: () => false,
+    setToolsExpanded: () => {},
+    select: async () => undefined,
+    confirm: async () => false,
+    input: async () => undefined,
+  };
+
+  const api: ExtensionAPI = {
+    on: ((event: string, handler: Function) => {
+      const list = handlers.get(event) ?? [];
+      list.push(handler);
+      handlers.set(event, list);
+    }) as any,
+    registerTool: vi.fn() as any,
+    registerCommand: ((name: string, options: any) => {
+      commands.set(name, { name, ...options } as RegisteredCommand);
+    }) as any,
+    registerShortcut: ((shortcut: string, options: any) => {
+      shortcuts.set(shortcut, options);
+    }) as any,
+    registerFlag: vi.fn() as any,
+    getFlag: vi.fn() as any,
+    registerMessageRenderer: ((type: string, renderer: unknown) => messageRenderers.set(type, renderer)) as any,
+    sendMessage: ((message: unknown, options?: unknown) => sentMessages.push({ message, options })) as any,
+    sendUserMessage: ((content: unknown, options?: unknown) => sentUserMessages.push({ content, options })) as any,
+    appendEntry: ((customType: string, data?: unknown) => entries.push({ type: "custom", customType, data })) as any,
+    setSessionName: vi.fn() as any,
+    getSessionName: vi.fn() as any,
+    setLabel: vi.fn() as any,
+    exec: vi.fn() as any,
+    getActiveTools: vi.fn(() => []) as any,
+    getAllTools: vi.fn(() => []) as any,
+    setActiveTools: vi.fn() as any,
+    getCommands: vi.fn(() => Array.from(commands.values())) as any,
+    setModel: vi.fn(async () => true) as any,
+    getThinkingLevel: vi.fn(() => mainThinkingLevel) as any,
+    setThinkingLevel: vi.fn() as any,
+    registerProvider: vi.fn() as any,
+  } as unknown as ExtensionAPI;
+
+  btwExtension(api);
+
+  const baseCtx = {
+    cwd: "/test/project",
+    isProjectTrusted: () => true,
+    hasUI: true,
+    mode: options.contextMode ?? "tui",
+    ui: ui as any,
+    sessionManager: sessionManager as any,
+    modelRegistry: {
+      runtime: modelRegistryRuntime,
+      getApiKeyAndHeaders: vi.fn(async (requestedModel: { provider: string; id: string; api: string }) => {
+        if (authResolver) {
+          return authResolver(requestedModel);
+        }
+        if (credentialResolver) {
+          const key = credentialResolver(requestedModel);
+          return key ? { ok: true, apiKey: key, headers: undefined } : { ok: true, apiKey: undefined, headers: undefined };
+        }
+        return hasCredentials ? { ok: true, apiKey: "test-key", headers: undefined } : { ok: true, apiKey: undefined, headers: undefined };
+      }),
+      hasConfiguredAuth: vi.fn((requestedModel: { provider: string; id: string; api: string }) => {
+        if (configuredAuthResolver) {
+          return configuredAuthResolver(requestedModel);
+        }
+        if (authResolver) {
+          const auth = authResolver(requestedModel);
+          if (auth instanceof Promise) {
+            return false;
+          }
+          return (
+            auth.ok &&
+            (!!auth.apiKey || !!Object.keys(auth.headers ?? {}).length || !!Object.keys(auth.env ?? {}).length)
+          );
+        }
+        if (credentialResolver) {
+          return !!credentialResolver(requestedModel);
+        }
+        return hasCredentials;
+      }),
+      // Resolve explicitly registered fixtures, falling back to the harness model shape.
+      find: vi.fn((provider: string, id: string) => {
+        const key = `${provider}/${id}`;
+        const known = registeredModels.get(key);
+        if (known) return known;
+        return { provider, id, api: "anthropic-messages" } as any;
+      }),
+      // ModelRegistry methods delegate through runtime state. Keep the receiver
+      // dependency here so detached method calls fail in tests too.
+      getRegisteredProviderConfig: vi.fn(function (
+        this: { runtime: typeof modelRegistryRuntime },
+        provider: string,
+      ) {
+        return this.runtime.registeredProviderConfigs.get(provider);
+      }),
+      getRegisteredNativeProvider: vi.fn(function (
+        this: { runtime: typeof modelRegistryRuntime },
+        provider: string,
+      ) {
+        return this.runtime.registeredNativeProviders.get(provider);
+      }),
+      getProviderAuthStatus: vi.fn(function (this: { runtime: typeof modelRegistryRuntime }) {
+        const source = this.runtime.getCredentialSource();
+        return source ? { configured: true, source } : { configured: false };
+      }),
+    },
+    model,
+    getSystemPrompt: () => "system",
+    isIdle: () => idle,
+  };
+
+  async function runEvent(name: string, event: unknown = {}, ctx: ExtensionContext | ExtensionCommandContext = baseCtx as any) {
+    const list = handlers.get(name) ?? [];
+    const results = [];
+    for (const handler of list) {
+      results.push(await handler(event, ctx));
+    }
+    return results;
+  }
+
+  async function runSessionStart() {
+    await runEvent("session_start");
+  }
+
+  async function command(name: string, args = "") {
+    const cmd = commands.get(name);
+    if (!cmd) throw new Error(`Missing command: ${name}`);
+    await cmd.handler(args, baseCtx as unknown as ExtensionCommandContext);
+  }
+
+  async function shortcut(name: string) {
+    const registered = shortcuts.get(name);
+    if (!registered) throw new Error(`Missing shortcut: ${name}`);
+    await registered.handler(undefined, baseCtx as unknown as ExtensionContext);
+  }
+
+  function latestOverlayComponent() {
+    const overlay = overlays.at(-1)?.component;
+    if (!overlay) throw new Error("Overlay not created");
+    return overlay;
+  }
+
+  function latestWidgetFactory() {
+    const widget = [...widgets].reverse().find((entry) => entry.key === "btw" && typeof entry.content === "function");
+    if (!widget) throw new Error("Widget not rendered");
+    return widget.content as (tui: unknown, theme: typeof theme) => any;
+  }
+
+  function startMainSessionInput(text: string) {
+    mainSessionInputs.push(text);
+    idle = false;
+
+    return {
+      finish() {
+        idle = true;
+      },
+    };
+  }
+
+  return {
+    api,
+    entries,
+    messageRenderers,
+    notifications,
+    widgets,
+    sentMessages,
+    sentUserMessages,
+    overlayHandles,
+    overlays,
+    terminalWrites,
+    tui,
+    baseCtx,
+    mainSessionInputs,
+    runSessionStart,
+    runEvent,
+    command,
+    shortcut,
+    latestOverlayComponent,
+    latestWidgetFactory,
+    startMainSessionInput,
+    setIdle(value: boolean) {
+      idle = value;
+    },
+    setCredentials(value: boolean) {
+      hasCredentials = value;
+    },
+    setCredentialResolver(value: ((model: { provider: string; id: string; api: string }) => string | undefined) | null) {
+      credentialResolver = value;
+    },
+    setAuthResolver(value: ((model: { provider: string; id: string; api: string }) => TestAuthResult | Promise<TestAuthResult>) | null) {
+      authResolver = value;
+    },
+    setConfiguredAuthResolver(value: ((model: { provider: string; id: string; api: string }) => boolean) | null) {
+      configuredAuthResolver = value;
+    },
+    setCredentialSource(value: string | undefined) {
+      credentialSource = value;
+    },
+    setMainThinkingLevel(value: string) {
+      mainThinkingLevel = value;
+    },
+    /** Register a model so ctx.modelRegistry.find(provider, id) returns it (with the given api). */
+    registerModel(provider: string, id: string, api: string) {
+      registeredModels.set(`${provider}/${id}`, { provider, id, api });
+    },
+    registerProviderConfig(provider: string, config: unknown) {
+      registeredProviderConfigs.set(provider, config);
+    },
+    registerNativeProvider(provider: string, nativeProvider: unknown) {
+      registeredNativeProviders.set(provider, nativeProvider);
+    },
+  };
+}
+
+describe("btw runtime behavior", () => {
+  beforeEach(() => {
+    promptStreamMock.mockReset();
+    createAgentSessionMock.mockReset();
+    sessionManagerInMemoryMock.mockClear();
+    modelRuntimeCreateMock.mockReset();
+    modelRuntimeExport.create = modelRuntimeCreateMock;
+    modelRuntimeRecords.length = 0;
+    subSessionRecords.length = 0;
+    readBtwExtensionSourcesMock.mockReset().mockResolvedValue([]);
+    loadBtwExtensionResourcesMock.mockReset();
+
+    createAgentSessionMock.mockImplementation(async (options: any) => createMockAgentSession(options));
+    modelRuntimeCreateMock.mockImplementation(async () => {
+      const runtime = {
+        registerProvider: vi.fn(),
+        registerNativeProvider: vi.fn(),
+        refresh: vi.fn(async () => ({ aborted: false, errors: new Map() })),
+        setRuntimeApiKey: vi.fn(async () => {}),
+      };
+      modelRuntimeRecords.push(runtime);
+      return runtime;
+    });
+    promptStreamMock.mockImplementation((_record: unknown, _text: string, context: StreamContext) => {
+      return streamAnswer(`default:${(context.messages.at(-1)?.content[0] as any)?.text ?? ""}`);
+    });
+  });
+
+  it("creates a BTW sub-session with an in-memory session manager, coding tools, and BTW system prompt", async () => {
+    const harness = createHarness();
+
+    await harness.runSessionStart();
+    await harness.command("btw", "first question");
+
+    expect(createAgentSessionMock).toHaveBeenCalledTimes(1);
+    expect(sessionManagerInMemoryMock).toHaveBeenCalledTimes(1);
+
+    const options = createAgentSessionMock.mock.calls[0][0];
+    expect(options.model).toBe(harness.baseCtx.model);
+    expect(options).not.toHaveProperty("modelRegistry");
+    expect(options).not.toHaveProperty("modelRuntime");
+    expect(options.tools).toEqual(["read", "bash", "edit", "write"]);
+    expect(options.resourceLoader.getAppendSystemPrompt()[0]).toContain(
+      "You are having an aside conversation with the user, separate from their main working session.",
+    );
+    expect(options.resourceLoader.getSystemPromptSource()).toBeUndefined();
+    expect(options.resourceLoader.getAppendSystemPromptSources()).toEqual([]);
+
+    const subSession = subSessionRecords[0]?.session;
+    expect(subSession).toBeDefined();
+    expect(subSession.bindExtensions).not.toHaveBeenCalled();
+    expect(subSession.getActiveToolNames()).toEqual(["read", "bash", "edit", "write"]);
+    expect(subSession.prompt).toHaveBeenCalledWith("first question", { source: "extension" });
+  });
+
+  it("reuses /btw on the same contextual sub-session without registering /side", async () => {
+    const harness = createHarness();
+
+    await harness.runSessionStart();
+    expect(harness.api.getCommands().some((command) => command.name === "side")).toBe(false);
+    await harness.command("btw", "first question");
+    await harness.command("btw", "follow-up question");
+
+    expect(createAgentSessionMock).toHaveBeenCalledTimes(1);
+    const options = createAgentSessionMock.mock.calls[0][0];
+    expect(options.tools).toEqual(["read", "bash", "edit", "write"]);
+
+    const subSession = subSessionRecords[0]?.session;
+    expect(subSession.prompt).toHaveBeenNthCalledWith(1, "first question", { source: "extension" });
+    expect(subSession.prompt).toHaveBeenNthCalledWith(2, "follow-up question", { source: "extension" });
+    expect(getCustomEntries(harness.entries, "btw-thread-entry")).toHaveLength(2);
+  });
+
+  it.each([
+    ["btw", "read, bash, edit, write"],
+    ["btw:tangent", "read, bash, edit, write"],
+    ["btw:ask", "read, grep, find, ls"],
+  ])("%s appends an authoritative child capability list after inherited instructions", async (command, tools) => {
+    const harness = createHarness();
+    const inherited = "Keep the project's conventions. Available tools: bash, edit, web_search. Skills: use mcp.";
+    harness.baseCtx.getSystemPrompt = () => `${inherited}\nCurrent working directory: /parent`;
+
+    await harness.runSessionStart();
+    await harness.command(command, "side question");
+
+    const prompt = subSessionRecords[0].promptCalls[0].context.systemPrompt;
+    expect(prompt).toContain(inherited);
+    expect(prompt).not.toContain("Current working directory: /parent");
+    const capabilities = prompt.slice(prompt.lastIndexOf("<btw_capabilities>"));
+    expect(capabilities).toContain(`Available tools in this BTW session: ${tools}.`);
+    expect(capabilities).toContain("This capability list is authoritative");
+    expect(capabilities).toContain("Tool and skill instructions inherited from the main session");
+    expect(capabilities).toContain("historical context, not available capabilities");
+    expect(capabilities).not.toContain("web_search");
+    expect(capabilities).not.toContain("mcp");
+  });
+
+  it("tells the summarizer that no tools are available despite inherited tool claims", async () => {
+    const harness = createHarness();
+    harness.baseCtx.getSystemPrompt = () => "Available tools: bash, web_search, mcp.";
+
+    await harness.runSessionStart();
+    await harness.command("btw", "side question");
+    await harness.command("btw:summarize", "");
+
+    const record = subSessionRecords[1];
+    expect(record.options.tools).toEqual([]);
+    const prompt = record.promptCalls[0].context.systemPrompt;
+    expect(prompt).toContain("Summarize the side conversation concisely");
+    expect(prompt.slice(prompt.lastIndexOf("<btw_capabilities>"))).toContain(
+      "No tools are available in this BTW session.",
+    );
+  });
+
+  function allowExtensionTools(names = ["web_search", "fetch_content"]) {
+    readBtwExtensionSourcesMock.mockResolvedValue(["npm:pi-web-access"]);
+    const extensionsResult = {
+      extensions: [{ path: "/btw/web.ts", tools: new Map(names.map((name) => [name, {}])) }],
+      errors: [] as Array<{ path: string; error: string }>,
+      runtime: {},
+    };
+    loadBtwExtensionResourcesMock.mockResolvedValue({ getExtensions: () => extensionsResult });
+    return extensionsResult;
+  }
+
+  it.each(["btw", "btw:tangent"])("%s activates allowlisted extension tools with headless startup", async (command) => {
+    const harness = createHarness();
+    allowExtensionTools();
+    vi.mocked(harness.api.getAllTools).mockReturnValue([
+      { name: "web_search", sourceInfo: { path: "/parent/web.ts" } } as any,
+    ]);
+
+    await harness.runSessionStart();
+    await harness.command(command, "look this up");
+
+    expect(readBtwExtensionSourcesMock).toHaveBeenCalledWith(expect.objectContaining({
+      cwd: "/test/project", projectTrusted: true,
+    }));
+    expect(loadBtwExtensionResourcesMock).toHaveBeenCalledWith(expect.objectContaining({
+      sources: ["npm:pi-web-access"], parentExtensionPaths: ["/parent/web.ts"],
+    }));
+    const { session, options, promptCalls } = subSessionRecords[0];
+    expect(options.noTools).toBe("builtin");
+    expect(options).not.toHaveProperty("tools");
+    expect(session.getActiveToolNames()).toEqual(["read", "bash", "edit", "write", "web_search", "fetch_content"]);
+    expect(session.bindExtensions).toHaveBeenCalledWith({ onError: expect.any(Function) });
+    expect(session.bindExtensions.mock.invocationCallOrder[0]).toBeLessThan(session.prompt.mock.invocationCallOrder[0]);
+    expect(promptCalls[0].context.systemPrompt).toContain(
+      "Available tools in this BTW session: read, bash, edit, write, web_search, fetch_content.",
+    );
+  });
+
+  it("uses the current tool surface in the capability note after startup changes", async () => {
+    const harness = createHarness();
+    allowExtensionTools();
+    createAgentSessionMock.mockImplementation(async (options: any) => {
+      const result = createMockAgentSession(options);
+      result.session.bindExtensions.mockImplementation(async () => {
+        result.session.setActiveToolsByName(["read", "bash", "edit", "write", "load_web_tools"]);
+      });
+      return result;
+    });
+
+    await harness.runSessionStart();
+    await harness.command("btw", "first question");
+    const capabilities = subSessionRecords[0].promptCalls[0].context.systemPrompt.split("<btw_capabilities>")[1];
+    expect(capabilities).toContain("load_web_tools");
+    expect(capabilities).not.toContain("web_search");
+  });
+
+  it("does not read extension config or load extensions for /btw:ask", async () => {
+    const harness = createHarness();
+    readBtwExtensionSourcesMock.mockRejectedValue(new Error("invalid config"));
+
+    await harness.runSessionStart();
+    await harness.command("btw:ask", "safe question");
+
+    expect(readBtwExtensionSourcesMock).not.toHaveBeenCalled();
+    expect(loadBtwExtensionResourcesMock).not.toHaveBeenCalled();
+    expect(subSessionRecords[0].session.getActiveToolNames()).toEqual(["read", "grep", "find", "ls"]);
+    expect(subSessionRecords[0].session.bindExtensions).not.toHaveBeenCalled();
+  });
+
+  it("keeps the summarizer tool-free when the BTW thread uses extensions", async () => {
+    const harness = createHarness();
+    allowExtensionTools();
+
+    await harness.runSessionStart();
+    await harness.command("btw", "search question");
+    await harness.command("btw:summarize", "");
+
+    const summary = subSessionRecords[1];
+    expect(loadBtwExtensionResourcesMock).toHaveBeenCalledTimes(1);
+    expect(summary.options.tools).toEqual([]);
+    expect(summary.options.resourceLoader.getExtensions().extensions).toEqual([]);
+    expect(summary.session.bindExtensions).not.toHaveBeenCalled();
+  });
+
+  it("shuts down extensions before disposal when switching into read-only mode", async () => {
+    const harness = createHarness();
+    allowExtensionTools();
+
+    await harness.runSessionStart();
+    await harness.command("btw", "search question");
+    await harness.command("btw:ask", "read-only question");
+    const session = subSessionRecords[0].session;
+    expect(session.extensionRunner.emit).toHaveBeenCalledWith({ type: "session_shutdown", reason: "quit" });
+    expect(session.abort.mock.invocationCallOrder[0]).toBeLessThan(session.extensionRunner.emit.mock.invocationCallOrder[0]);
+    expect(session.extensionRunner.emit.mock.invocationCallOrder[0]).toBeLessThan(session.dispose.mock.invocationCallOrder[0]);
+    expect(subSessionRecords[1].options.tools).toEqual(["read", "grep", "find", "ls"]);
+  });
+
+  it.each(["btw:clear", "btw:new", "btw:model", "btw:thinking", "session_tree", "session_shutdown"])("cleans up extensions on %s", async (action) => {
+    const harness = createHarness();
+    allowExtensionTools();
+    await harness.runSessionStart();
+    await harness.command("btw", "first question");
+    if (action.startsWith("session_")) await harness.runEvent(action);
+    else await harness.command(action, action === "btw:model" ? "fast-provider fast-model custom-api" : action === "btw:thinking" ? "low" : "");
+    expect(subSessionRecords[0].session.extensionRunner.emit).toHaveBeenCalledTimes(1);
+    expect(subSessionRecords[0].session.dispose).toHaveBeenCalledTimes(1);
+  });
+
+  it("reports loading/config errors without starting a partially configured child", async () => {
+    const harness = createHarness();
+    readBtwExtensionSourcesMock.mockRejectedValue(new Error("Invalid BTW config /test/btw.json"));
+    await harness.runSessionStart();
+    await harness.command("btw", "question");
+    expect(createAgentSessionMock).not.toHaveBeenCalled();
+    expect(harness.notifications.at(-1)).toMatchObject({
+      type: "error", message: expect.stringContaining("Invalid BTW config /test/btw.json"),
+    });
+
+    allowExtensionTools();
+    await harness.command("btw", "retry");
+    expect(subSessionRecords[0].session.prompt).toHaveBeenCalledWith("retry", { source: "extension" });
+  });
+
+  it.each(["load error", "startup error", "tool collision"])("cleans up and reports an extension %s", async (failure) => {
+    const harness = createHarness();
+    const result = allowExtensionTools(failure === "tool collision" ? ["read"] : ["web_search"]);
+    if (failure === "load error") result.errors.push({ path: "/broken.ts", error: "load failed" });
+    if (failure === "startup error") {
+      createAgentSessionMock.mockImplementation(async (options: any) => {
+        const created = createMockAgentSession(options);
+        created.session.bindExtensions.mockImplementation(async (bindings: any) => {
+          bindings.onError({ extensionPath: "/broken.ts", error: "startup failed" });
+        });
+        return created;
+      });
+    }
+    await harness.runSessionStart();
+    await harness.command("btw", "question");
+    const session = subSessionRecords[0].session;
+    expect(session.prompt).not.toHaveBeenCalled();
+    expect(session.extensionRunner.emit).toHaveBeenCalledWith({ type: "session_shutdown", reason: "quit" });
+    expect(session.dispose).toHaveBeenCalledTimes(1);
+    expect(harness.notifications.at(-1)).toMatchObject({ type: "error", message: expect.stringContaining("Could not start BTW session") });
+  });
+
+  it("disposes a child whose extension loading finishes after /btw:clear", async () => {
+    const harness = createHarness();
+    allowExtensionTools();
+    const loader = await loadBtwExtensionResourcesMock();
+    let finishLoad!: (loader: unknown) => void;
+    loadBtwExtensionResourcesMock.mockImplementation(() => new Promise((resolve) => { finishLoad = resolve; }));
+    await harness.runSessionStart();
+    const pending = harness.command("btw", "question");
+    await flushAsyncWork();
+    await harness.command("btw:clear", "");
+    finishLoad(loader);
+    await pending;
+    const session = subSessionRecords[0].session;
+    expect(session.prompt).not.toHaveBeenCalled();
+    expect(session.extensionRunner.emit).toHaveBeenCalledTimes(1);
+    expect(session.dispose).toHaveBeenCalledTimes(1);
+  });
+
+  it("reuses one child for overlapping composer opens during extension loading", async () => {
+    const harness = createHarness();
+    allowExtensionTools();
+    const loader = await loadBtwExtensionResourcesMock();
+    loadBtwExtensionResourcesMock.mockClear();
+    let finishLoad!: (loader: unknown) => void;
+    loadBtwExtensionResourcesMock.mockImplementation(() => new Promise((resolve) => { finishLoad = resolve; }));
+    await harness.runSessionStart();
+    const first = harness.command("btw", "");
+    const second = harness.command("btw", "");
+    await flushAsyncWork();
+    expect(loadBtwExtensionResourcesMock).toHaveBeenCalledTimes(1);
+    finishLoad(loader);
+    await Promise.all([first, second]);
+    expect(createAgentSessionMock).toHaveBeenCalledTimes(1);
+    expect(subSessionRecords[0].session.bindExtensions).toHaveBeenCalledTimes(1);
+  });
+
+  it("accepts configured keyless auth for normal BTW prompts", async () => {
+    const harness = createHarness();
+    harness.setAuthResolver(() => ({ ok: true }));
+    harness.setConfiguredAuthResolver(() => true);
+
+    await harness.runSessionStart();
+    await harness.command("btw", "credential-chain question");
+
+    expect(createAgentSessionMock).toHaveBeenCalledTimes(1);
+    expect(subSessionRecords[0]?.session.prompt).toHaveBeenCalledWith("credential-chain question", { source: "extension" });
+    expect(getCustomEntries(harness.entries, "btw-thread-entry")).toHaveLength(1);
+    expect(harness.notifications.some((entry) => entry.message.includes("No credentials"))).toBe(false);
+  });
+
+  it("accepts header-based auth for a BTW model override", async () => {
+    const harness = createHarness();
+    harness.setAuthResolver((requestedModel) =>
+      requestedModel.provider === "fast-provider"
+        ? { ok: true, headers: { Authorization: "Bearer subscription-token" } }
+        : { ok: true, apiKey: "main-key" },
+    );
+
+    await harness.runSessionStart();
+    await harness.command("btw:model", "fast-provider fast-model custom-api");
+    await harness.command("btw", "subscription question");
+
+    expect(createAgentSessionMock.mock.calls[0][0].model).toEqual({
+      provider: "fast-provider",
+      id: "fast-model",
+      api: "custom-api",
+    });
+  });
+
+  it("accepts environment-based auth when summarizing", async () => {
+    const harness = createHarness();
+    promptStreamMock
+      .mockImplementationOnce(() => streamAnswer("First answer"))
+      .mockImplementationOnce(() => streamAnswer("Environment-auth summary"));
+
+    await harness.runSessionStart();
+    await harness.command("btw", "first question");
+    harness.setAuthResolver(() => ({ ok: true, env: { AWS_PROFILE: "bedrock" } }));
+    await harness.command("btw:summarize", "handoff this");
+
+    expect(createAgentSessionMock).toHaveBeenCalledTimes(2);
+    expect(harness.sentUserMessages[0]?.content).toBe(
+      "Here is a summary of a side conversation I had. handoff this\n\nEnvironment-auth summary",
+    );
+  });
+
+  it("copies a registered custom provider into BTW and summary child runtimes", async () => {
+    const harness = createHarness();
+    const providerConfig = { api: "commandcode-custom", streamSimple: vi.fn() };
+    harness.registerProviderConfig("test-provider", providerConfig);
+
+    await harness.runSessionStart();
+    await harness.command("btw", "first question");
+    await harness.command("btw:summarize", "handoff this");
+
+    expect(modelRuntimeCreateMock).toHaveBeenCalledTimes(2);
+    expect(modelRuntimeCreateMock).toHaveBeenCalledWith({ allowModelNetwork: false });
+    expect(modelRuntimeRecords).toHaveLength(2);
+    for (const runtime of modelRuntimeRecords) {
+      expect(runtime.registerProvider).toHaveBeenCalledWith("test-provider", providerConfig);
+      expect(runtime.refresh).toHaveBeenCalledWith({ allowNetwork: false });
+    }
+
+    expect(createAgentSessionMock.mock.calls[0][0].modelRuntime).toBe(modelRuntimeRecords[0]);
+    expect(createAgentSessionMock.mock.calls[1][0].modelRuntime).toBe(modelRuntimeRecords[1]);
+  });
+
+  it("copies a temporary runtime API key into BTW and summary child runtimes", async () => {
+    const harness = createHarness();
+    harness.registerProviderConfig("test-provider", { api: "commandcode-custom", streamSimple: vi.fn() });
+    harness.setCredentialSource("runtime");
+
+    await harness.runSessionStart();
+    await harness.command("btw", "first question");
+    await harness.command("btw:summarize", "handoff this");
+
+    expect(modelRuntimeRecords).toHaveLength(2);
+    for (const runtime of modelRuntimeRecords) {
+      expect(runtime.setRuntimeApiKey).toHaveBeenCalledWith("test-provider", "test-key");
+    }
+  });
+
+  it("copies a temporary runtime API key even when no provider registration needs copying", async () => {
+    const harness = createHarness();
+    harness.setCredentialSource("runtime");
+
+    await harness.runSessionStart();
+    await harness.command("btw", "first question");
+    await harness.command("btw:summarize", "handoff this");
+
+    expect(modelRuntimeRecords).toHaveLength(2);
+    for (const runtime of modelRuntimeRecords) {
+      expect(runtime.registerProvider).not.toHaveBeenCalled();
+      expect(runtime.setRuntimeApiKey).toHaveBeenCalledWith("test-provider", "test-key");
+    }
+  });
+
+  it("copies a custom BTW model override into both child runtimes without changing thinking behavior", async () => {
+    const harness = createHarness();
+    const providerConfig = { api: "custom-api", streamSimple: vi.fn() };
+    harness.registerModel("override-provider", "override-model", "custom-api");
+    harness.registerProviderConfig("override-provider", providerConfig);
+
+    await harness.runSessionStart();
+    await harness.command("btw:model", "override-provider override-model custom-api");
+    await harness.command("btw:thinking", "low");
+    await harness.command("btw", "first question");
+    await harness.command("btw:summarize", "handoff this");
+
+    expect(modelRuntimeRecords).toHaveLength(2);
+    for (const runtime of modelRuntimeRecords) {
+      expect(runtime.registerProvider).toHaveBeenCalledWith("override-provider", providerConfig);
+    }
+
+    const [btwOptions, summaryOptions] = createAgentSessionMock.mock.calls.map(([options]) => options);
+    expect(btwOptions).toMatchObject({
+      model: { provider: "override-provider", id: "override-model", api: "custom-api" },
+      thinkingLevel: "low",
+      modelRuntime: modelRuntimeRecords[0],
+    });
+    expect(summaryOptions).toMatchObject({
+      model: { provider: "override-provider", id: "override-model", api: "custom-api" },
+      thinkingLevel: "off",
+      modelRuntime: modelRuntimeRecords[1],
+    });
+  });
+
+  it("copies a registered native provider into the BTW child runtime", async () => {
+    const harness = createHarness();
+    const nativeProvider = { id: "test-provider" };
+    harness.registerNativeProvider("test-provider", nativeProvider);
+
+    await harness.runSessionStart();
+    await harness.command("btw", "first question");
+
+    expect(modelRuntimeCreateMock).toHaveBeenCalledTimes(1);
+    expect(modelRuntimeRecords[0].registerNativeProvider).toHaveBeenCalledWith(nativeProvider);
+    expect(modelRuntimeRecords[0].registerProvider).not.toHaveBeenCalled();
+    expect(createAgentSessionMock.mock.calls[0][0].modelRuntime).toBe(modelRuntimeRecords[0]);
+  });
+
+  it("uses BTW-specific model and thinking overrides for BTW prompts", async () => {
+    const harness = createHarness();
+    harness.setMainThinkingLevel("high");
+
+    await harness.runSessionStart();
+    await harness.command("btw:model", "fast-provider fast-model custom-api");
+    await harness.command("btw:thinking", "low");
+    await harness.command("btw", "first question");
+
+    expect(createAgentSessionMock).toHaveBeenCalledTimes(1);
+    const options = createAgentSessionMock.mock.calls[0][0];
+    expect(options.model).toEqual({ provider: "fast-provider", id: "fast-model", api: "custom-api" });
+    expect(options.thinkingLevel).toBe("low");
+
+    const entry = getCustomEntries(harness.entries, "btw-thread-entry")[0];
+    expect(entry).toBeDefined();
+    expect(entry.data).toMatchObject({
+      provider: "fast-provider",
+      model: "fast-model",
+      api: "custom-api",
+      thinkingLevel: "low",
+    });
+  });
+
+  it("uses the BTW model override but keeps summarize thinking off", async () => {
+    const harness = createHarness();
+    harness.setMainThinkingLevel("high");
+
+    await harness.runSessionStart();
+    await harness.command("btw:model", "fast-provider fast-model custom-api");
+    await harness.command("btw:thinking", "low");
+    await harness.command("btw", "first question");
+    await harness.command("btw:summarize", "handoff this");
+
+    expect(createAgentSessionMock).toHaveBeenCalledTimes(2);
+    const summaryOptions = createAgentSessionMock.mock.calls[1][0];
+    expect(summaryOptions.model).toEqual({ provider: "fast-provider", id: "fast-model", api: "custom-api" });
+    expect(summaryOptions.thinkingLevel).toBe("off");
+    expect(summaryOptions.tools).toEqual([]);
+  });
+
+  it("clearing BTW overrides restores inheritance from the main thread", async () => {
+    const harness = createHarness();
+    harness.setMainThinkingLevel("high");
+
+    await harness.runSessionStart();
+    await harness.command("btw:model", "fast-provider fast-model custom-api");
+    await harness.command("btw:thinking", "low");
+    await harness.command("btw:model", "clear");
+    await harness.command("btw:thinking", "clear");
+    await harness.command("btw", "first question");
+
+    expect(createAgentSessionMock).toHaveBeenCalledTimes(1);
+    const options = createAgentSessionMock.mock.calls[0][0];
+    expect(options.model).toBe(harness.baseCtx.model);
+    expect(options.thinkingLevel).toBe("high");
+  });
+
+  it("restores BTW override state from session history", async () => {
+    const harness = createHarness([
+      {
+        type: "custom",
+        customType: "btw-model-override",
+        data: { action: "set", provider: "saved-provider", id: "saved-model", api: "saved-api", timestamp: 1 },
+      },
+      {
+        type: "custom",
+        customType: "btw-thinking-override",
+        data: { action: "set", thinkingLevel: "low", timestamp: 2 },
+      },
+      {
+        type: "custom",
+        customType: "btw-thread-entry",
+        data: {
+          question: "saved question",
+          thinking: "",
+          answer: "saved answer",
+          provider: "saved-provider",
+          model: "saved-model",
+          api: "saved-api",
+          thinkingLevel: "low",
+          timestamp: 3,
+        },
+      },
+    ]);
+    // Register the saved override so restoration resolves a model whose API matches
+    // the persisted session entry.
+    harness.registerModel("saved-provider", "saved-model", "saved-api");
+
+    await harness.runSessionStart();
+    await harness.command("btw", "follow-up");
+
+    const options = createAgentSessionMock.mock.calls[0][0];
+    expect(options.model).toEqual({ provider: "saved-provider", id: "saved-model", api: "saved-api" });
+    expect(options.thinkingLevel).toBe("low");
+
+    const seedTexts = subSessionRecords[0].seedMessages.map((message) => (message.content[0] as any)?.text ?? "");
+    expect(seedTexts).toContain("saved question");
+    expect(seedTexts).toContain("saved answer");
+  });
+
+  it("reports inherited and overridden BTW settings from the read-only commands", async () => {
+    const harness = createHarness();
+    harness.setMainThinkingLevel("high");
+
+    await harness.runSessionStart();
+    await harness.command("btw:model", "");
+    expect(harness.notifications.at(-1)?.message).toContain("BTW model: test-provider/test-model (openai-responses) (inherits main thread).");
+
+    await harness.command("btw:thinking", "");
+    expect(harness.notifications.at(-1)).toEqual({
+      message: "BTW thinking: high (inherits main thread).",
+      type: "info",
+    });
+
+    await harness.command("btw:model", "fast-provider fast-model custom-api");
+    await harness.command("btw:thinking", "low");
+
+    await harness.command("btw:model", "");
+    expect(harness.notifications.at(-1)?.message).toContain("BTW model: fast-provider/fast-model (custom-api) (override).");
+
+    await harness.command("btw:thinking", "");
+    expect(harness.notifications.at(-1)).toEqual({
+      message: "BTW thinking: low (override).",
+      type: "info",
+    });
+  });
+
+  it("falls back to the main model when the BTW model override has no credentials", async () => {
+    const harness = createHarness();
+    harness.setCredentialResolver((requestedModel) =>
+      requestedModel.provider === "fast-provider" ? undefined : "main-key",
+    );
+
+    await harness.runSessionStart();
+    await harness.command("btw:model", "fast-provider fast-model custom-api");
+    await harness.command("btw", "first question");
+
+    const options = createAgentSessionMock.mock.calls[0][0];
+    expect(options.model).toBe(harness.baseCtx.model);
+    expect(
+      harness.notifications.some((entry) =>
+        entry.message.includes(
+          "Configured BTW model fast-provider/fast-model (custom-api) has no credentials. Falling back to main model test-provider/test-model (openai-responses).",
+        ),
+      ),
+    ).toBe(true);
+  });
+
+  it("disposing an active BTW session on override change preserves the hidden thread and applies the new settings next turn", async () => {
+    const harness = createHarness();
+
+    await harness.runSessionStart();
+    await harness.command("btw", "first question");
+
+    const firstSession = subSessionRecords[0].session;
+    await harness.command("btw:thinking", "low");
+
+    expect(firstSession.abort).toHaveBeenCalledTimes(1);
+    expect(firstSession.dispose).toHaveBeenCalledTimes(1);
+    expect(getCustomEntries(harness.entries, "btw-thread-entry")).toHaveLength(1);
+
+    await harness.command("btw:model", "fast-provider fast-model custom-api");
+    await harness.command("btw", "second question");
+
+    expect(createAgentSessionMock).toHaveBeenCalledTimes(2);
+    const secondOptions = createAgentSessionMock.mock.calls[1][0];
+    expect(secondOptions.model).toEqual({ provider: "fast-provider", id: "fast-model", api: "custom-api" });
+    expect(secondOptions.thinkingLevel).toBe("low");
+  });
+
+  it("contextual BTW seeds the sub-session with main-session messages but excludes visible BTW notes", async () => {
+    const harness = createHarness([
+      {
+        type: "custom",
+        role: "custom",
+        customType: "btw-note",
+        content: "saved btw note",
+      } as SessionEntry,
+      {
+        type: "message",
+        role: "user",
+        content: [{ type: "text", text: "main session task" }],
+        timestamp: Date.now(),
+      } as SessionEntry,
+      {
+        type: "message",
+        role: "assistant",
+        content: [{ type: "text", text: "main session answer" }],
+        timestamp: Date.now(),
+      } as SessionEntry,
+    ]);
+
+    await harness.runSessionStart();
+    await harness.command("btw", "contextual start");
+
+    const record = subSessionRecords[0];
+    const seedTexts = record.seedMessages.map((message) => (message.content[0] as any)?.text ?? "");
+    const promptTexts = record.promptCalls[0].context.messages.map((message) => (message.content[0] as any)?.text ?? "");
+    expect(seedTexts).toContain("main session task");
+    expect(seedTexts).toContain("main session answer");
+    expect(seedTexts).not.toContain("saved btw note");
+    expect(record.options.sessionManager.appendMessage).toHaveBeenCalledTimes(2);
+    expect(promptTexts).toContain("main session task");
+    expect(promptTexts).toContain("main session answer");
+  });
+
+  it("switching to tangent recreates the sub-session without inherited main-session context", async () => {
+    const harness = createHarness([
+      {
+        type: "message",
+        role: "user",
+        content: [{ type: "text", text: "main session task" }],
+        timestamp: Date.now(),
+      } as SessionEntry,
+    ]);
+
+    await harness.runSessionStart();
+    await harness.command("btw", "contextual start");
+    const contextualRecord = subSessionRecords[0];
+    expect(contextualRecord.seedMessages.map((message) => (message.content[0] as any)?.text ?? "")).toContain(
+      "main session task",
+    );
+
+    await harness.command("btw:tangent", "tangent start");
+
+    const tangentRecord = subSessionRecords[1];
+    expect(tangentRecord.session).not.toBe(contextualRecord.session);
+    expect(contextualRecord.session.abort).toHaveBeenCalledTimes(1);
+    expect(contextualRecord.session.dispose).toHaveBeenCalledTimes(1);
+    expect(tangentRecord.seedMessages.map((message) => (message.content[0] as any)?.text ?? "")).not.toContain(
+      "main session task",
+    );
+    expect(
+      tangentRecord.promptCalls[0].context.messages.map((message) => (message.content[0] as any)?.text ?? ""),
+    ).not.toContain("main session task");
+  });
+
+  it("/btw:ask creates a read-only sub-session with only pi's read-only tools", async () => {
+    const harness = createHarness();
+
+    await harness.runSessionStart();
+    await harness.command("btw:ask", "read-only question");
+
+    expect(createAgentSessionMock).toHaveBeenCalledTimes(1);
+    const options = createAgentSessionMock.mock.calls[0][0];
+    expect(options.tools).toEqual(["read", "grep", "find", "ls"]);
+    expect(options.tools).not.toContain("bash");
+    expect(options.tools).not.toContain("edit");
+    expect(options.tools).not.toContain("write");
+
+    const record = subSessionRecords[0];
+    expect(record.session.getActiveToolNames()).toEqual(["read", "grep", "find", "ls"]);
+    expect(record.session.prompt).toHaveBeenCalledWith("read-only question", { source: "extension" });
+
+    const overlay = harness.latestOverlayComponent();
+    expect(overlay["modeText"].text).toContain("read-only");
+    expect(getCustomEntries(harness.entries, "btw-thread-reset").at(-1)?.data).toMatchObject({ mode: "readonly" });
+  });
+
+  it("/btw:ask seeds the read-only sub-session with main-session context like /btw", async () => {
+    // Pre-seed a read-only reset so /btw:ask continues the thread instead of
+    // resetting; the trailing main-session message is what buildBtwSeedState copies.
+    const harness = createHarness([
+      { type: "custom", customType: "btw-thread-reset", data: { timestamp: 1, mode: "readonly" } } as SessionEntry,
+      {
+        type: "message",
+        role: "user",
+        content: [{ type: "text", text: "main session task" }],
+        timestamp: Date.now(),
+      } as SessionEntry,
+    ]);
+
+    await harness.runSessionStart();
+    await harness.command("btw:ask", "read-only question");
+
+    const record = subSessionRecords[0];
+    expect(record.options.tools).toEqual(["read", "grep", "find", "ls"]);
+    expect(record.seedMessages.map((message) => (message.content[0] as any)?.text ?? "")).toContain("main session task");
+    expect(record.promptCalls[0].context.messages.map((message) => (message.content[0] as any)?.text ?? "")).toContain(
+      "main session task",
+    );
+  });
+
+  it("keeps the read-only tool surface for modal follow-ups in one /btw:ask thread", async () => {
+    const harness = createHarness();
+    promptStreamMock
+      .mockImplementationOnce(() => streamAnswer("First answer"))
+      .mockImplementationOnce(() => streamAnswer("Second answer"));
+
+    await harness.runSessionStart();
+    await harness.command("btw:ask", "first read-only question");
+
+    const overlay = harness.latestOverlayComponent();
+    overlay.input.onSubmit?.("follow-up read-only question");
+    await flushAsyncWork();
+
+    expect(createAgentSessionMock).toHaveBeenCalledTimes(1);
+    const record = subSessionRecords[0];
+    expect(record.options.tools).toEqual(["read", "grep", "find", "ls"]);
+    expect(record.session.getActiveToolNames()).toEqual(["read", "grep", "find", "ls"]);
+    expect(record.session.prompt).toHaveBeenLastCalledWith("follow-up read-only question", { source: "extension" });
+    expect(getCustomEntries(harness.entries, "btw-thread-entry")).toHaveLength(2);
+  });
+
+  it("disposes and recreates the sub-session when switching between contextual, read-only, and tangent modes", async () => {
+    const harness = createHarness();
+    promptStreamMock.mockImplementation(() => streamAnswer("mode answer"));
+
+    await harness.runSessionStart();
+    await harness.command("btw", "contextual start");
+    await harness.command("btw:ask", "read-only start");
+    await harness.command("btw", "contextual again");
+    await harness.command("btw:tangent", "tangent start");
+
+    expect(createAgentSessionMock).toHaveBeenCalledTimes(4);
+    const records = subSessionRecords.slice(0, 4);
+    expect(records.map((record) => record.options.tools)).toEqual([
+      ["read", "bash", "edit", "write"],
+      ["read", "grep", "find", "ls"],
+      ["read", "bash", "edit", "write"],
+      ["read", "bash", "edit", "write"],
+    ]);
+
+    for (const record of records.slice(0, 3)) {
+      expect(record.session.abort).toHaveBeenCalledTimes(1);
+      expect(record.session.dispose).toHaveBeenCalledTimes(1);
+    }
+    expect(records[3].session.dispose).not.toHaveBeenCalled();
+
+    const overlay = harness.latestOverlayComponent();
+    expect(overlay["modeText"].text).toContain("BTW tangent");
+    const resets = getCustomEntries(harness.entries, "btw-thread-reset");
+    expect(resets.map((entry) => (entry.data as any)?.mode)).toEqual(["readonly", "contextual", "tangent"]);
+  });
+
+  it("persists the read-only mode and restores it across a reload", async () => {
+    const firstHarness = createHarness();
+    promptStreamMock.mockImplementation(() => streamAnswer("read-only answer"));
+
+    await firstHarness.runSessionStart();
+    await firstHarness.command("btw:ask", "read-only question");
+
+    expect(getCustomEntries(firstHarness.entries, "btw-thread-reset").at(-1)?.data).toMatchObject({ mode: "readonly" });
+
+    const restoredHarness = createHarness(firstHarness.entries);
+    await restoredHarness.runEvent("session_start");
+    await restoredHarness.command("btw:ask", "");
+
+    const overlay = restoredHarness.latestOverlayComponent();
+    expect(overlay["modeText"].text).toContain("read-only");
+    expect(transcriptText(overlay)).toContain("You  read-only question");
+    expect(createAgentSessionMock.mock.calls.at(-1)?.[0].tools).toEqual(["read", "grep", "find", "ls"]);
+    expect(getCustomEntries(restoredHarness.entries, "btw-thread-reset")).toHaveLength(1);
+  });
+
+  it("supports --save on /btw:ask while keeping the read-only tool surface", async () => {
+    const harness = createHarness();
+    promptStreamMock.mockImplementation(() => streamAnswer("Saved answer"));
+
+    await harness.runSessionStart();
+    await harness.command("btw:ask", "--save saved read-only question");
+
+    expect(harness.sentMessages).toHaveLength(1);
+    expect(harness.sentMessages[0]).toEqual({
+      message: expect.objectContaining({
+        customType: "btw-note",
+        content: "**Question**\n\nsaved read-only question\n\n**Answer**\n\nSaved answer",
+      }),
+      options: undefined,
+    });
+    expect(subSessionRecords[0].options.tools).toEqual(["read", "grep", "find", "ls"]);
+    expect(getCustomEntries(harness.entries, "btw-thread-entry")).toHaveLength(1);
+  });
+
+  it("opens a read-only composer from a composer-only /btw:ask", async () => {
+    const harness = createHarness();
+
+    await harness.runSessionStart();
+    await harness.command("btw:ask", "");
+
+    expect(harness.overlays).toHaveLength(1);
+    const overlay = harness.latestOverlayComponent();
+    expect(overlay["modeText"].text).toContain("read-only");
+    expect(createAgentSessionMock.mock.calls.at(-1)?.[0].tools).toEqual(["read", "grep", "find", "ls"]);
+    const resets = getCustomEntries(harness.entries, "btw-thread-reset");
+    expect(resets).toHaveLength(1);
+    expect(resets.at(-1)?.data).toMatchObject({ mode: "readonly" });
+  });
+
+  it("in-modal /btw:ask reuses command semantics and switches the thread to read-only", async () => {
+    const harness = createHarness();
+    promptStreamMock
+      .mockImplementationOnce(() => streamAnswer("First answer"))
+      .mockImplementationOnce(() => streamAnswer("Read-only answer"));
+
+    await harness.runSessionStart();
+    await harness.command("btw", "first question");
+
+    const overlay = harness.latestOverlayComponent();
+    overlay.input.onSubmit?.("/btw:ask read-only follow-up");
+    await flushAsyncWork();
+
+    const resets = getCustomEntries(harness.entries, "btw-thread-reset");
+    expect(resets).toHaveLength(1);
+    expect(resets.at(-1)?.data).toMatchObject({ mode: "readonly" });
+    expect(subSessionRecords.at(-1)?.options.tools).toEqual(["read", "grep", "find", "ls"]);
+    expect(overlay["modeText"].text).toContain("read-only");
+    const transcript = transcriptText(overlay);
+    expect(transcript).toContain("You  read-only follow-up");
+    expect(transcript).not.toContain("You  first question");
+  });
+
+  it("preserves BTW overlay recoverability after agent prompt failure", async () => {
+    const harness = createHarness();
+    promptStreamMock
+      .mockImplementationOnce(async function* () {
+        yield {
+          type: "error" as const,
+          error: {
+            ...makeAssistantMessage(""),
+            stopReason: "error" as const,
+            errorMessage: "Sub-session prompt exploded",
+          },
+        };
+      })
+      .mockImplementationOnce(() => streamAnswer("Recovered answer"));
+
+    await harness.runSessionStart();
+    await harness.command("btw", "broken question");
+
+    const overlay = harness.latestOverlayComponent();
+    expect(overlay.statusText.text).toContain("Request failed. Thread preserved for retry or follow-up.");
+    expect(transcriptText(overlay)).toContain("❌ Sub-session prompt exploded");
+    expect(harness.notifications.at(-1)).toEqual({
+      message: "Sub-session prompt exploded",
+      type: "error",
+    });
+    expect(getCustomEntries(harness.entries, "btw-thread-entry")).toHaveLength(0);
+
+    overlay.input.onSubmit?.("retry question");
+    await flushAsyncWork();
+
+    expect(getCustomEntries(harness.entries, "btw-thread-entry")).toHaveLength(1);
+    expect(transcriptText(overlay)).toContain("Recovered answer");
+    expect(overlay.statusText.text).toContain("Ready for a follow-up. Hidden BTW thread updated.");
+  });
+
+  it("subscribes to the BTW sub-session as soon as the overlay opens", async () => {
+    const harness = createHarness();
+
+    await harness.runSessionStart();
+    await harness.command("btw", "");
+
+    const record = subSessionRecords[0];
+    expect(record).toBeDefined();
+    expect(record.getListenerCount()).toBe(1);
+    expect(record.session.prompt).not.toHaveBeenCalled();
+  });
+
+  it("clears a non-empty BTW composer on app.clear without dismissing the overlay", async () => {
+    const harness = createHarness([], {
+      keybindingMatches: (_data, id) => id === "app.clear" || id === "tui.select.cancel",
+    });
+
+    await harness.runSessionStart();
+    await harness.command("btw", "");
+
+    const overlay = harness.latestOverlayComponent();
+    overlay.input.setValue("draft follow-up");
+    overlay.input.handleInput("\x03");
+
+    expect(overlay.input.getValue()).toBe("");
+    expect(harness.overlayHandles.at(-1)?.hideCalls).toBe(0);
+  });
+
+  it("dismisses the BTW overlay on app.clear when the composer is empty", async () => {
+    const harness = createHarness([], {
+      keybindingMatches: (_data, id) => id === "app.clear" || id === "tui.select.cancel",
+    });
+
+    await harness.runSessionStart();
+    await harness.command("btw", "");
+
+    const overlay = harness.latestOverlayComponent();
+    overlay.input.setValue("");
+    overlay.input.handleInput("\x03");
+    await flushAsyncWork();
+
+    expect(harness.overlayHandles.at(-1)?.hideCalls).toBe(1);
+  });
+
+  it("still dismisses the BTW overlay on select cancel", async () => {
+    const harness = createHarness([], {
+      keybindingMatches: (_data, id) => id === "tui.select.cancel",
+    });
+
+    await harness.runSessionStart();
+    await harness.command("btw", "");
+
+    const overlay = harness.latestOverlayComponent();
+    overlay.input.setValue("draft follow-up");
+    overlay.input.handleInput("\x1b");
+    await flushAsyncWork();
+
+    expect(harness.overlayHandles.at(-1)?.hideCalls).toBe(1);
+  });
+
+  it("aborts mid-stream on first Escape but keeps the overlay open, then dismisses on second Escape", async () => {
+    const harness = createHarness();
+    const blocking = createBlockingToolStream();
+    promptStreamMock
+      .mockImplementationOnce(() => blocking.stream())
+      .mockImplementationOnce(() => streamAnswer("Recovered after abort"));
+
+    await harness.runSessionStart();
+    const pendingCommand = harness.command("btw", "first question");
+    await flushAsyncWork();
+
+    const overlay = harness.latestOverlayComponent();
+    expect(overlay.statusText.text).toContain("running tool: read");
+
+    const firstRecord = subSessionRecords[0];
+    expect(firstRecord).toBeDefined();
+    expect(firstRecord.getIsStreaming()).toBe(true);
+    expect(firstRecord.getListenerCount()).toBe(1);
+
+    // First Escape: abort the in-flight request, keep the overlay open.
+    overlay.input.onEscape?.();
+    await flushAsyncWork();
+
+    expect(firstRecord.session.abort).toHaveBeenCalledTimes(1);
+    expect(firstRecord.session.dispose).not.toHaveBeenCalled();
+    expect(firstRecord.getListenerCount()).toBe(1);
+    expect(harness.overlayHandles.at(-1)?.hideCalls).toBe(0);
+    expect(overlay.statusText.text).toContain("Press Esc again to dismiss");
+
+    // The aborted request settles without persisting a completed exchange, while
+    // its partial user/tool transcript remains readable.
+    blocking.release();
+    await pendingCommand;
+    expect(firstRecord.getIsStreaming()).toBe(false);
+    expect(getCustomEntries(harness.entries, "btw-thread-entry")).toHaveLength(0);
+    expect(transcriptText(overlay)).toContain("first question");
+    expect(transcriptText(overlay)).toContain("read");
+
+    // The same side session remains usable for a successful follow-up.
+    overlay.input.onSubmit?.("follow-up after abort");
+    await flushAsyncWork();
+
+    expect(firstRecord.session.prompt).toHaveBeenLastCalledWith("follow-up after abort", { source: "extension" });
+    expect(getCustomEntries(harness.entries, "btw-thread-entry")).toHaveLength(1);
+    expect(transcriptText(overlay)).toContain("first question");
+    expect(transcriptText(overlay)).toContain("follow-up after abort");
+    expect(transcriptText(overlay)).toContain("Recovered after abort");
+
+    // Second Escape (now idle): dismiss and dispose as before.
+    overlay.input.onEscape?.();
+    await flushAsyncWork();
+
+    expect(firstRecord.session.dispose).toHaveBeenCalledTimes(1);
+    expect(firstRecord.getListenerCount()).toBe(0);
+    expect(harness.overlayHandles.at(-1)?.hideCalls).toBe(1);
+  });
+
+  it("keeps partial assistant output visible without counting or persisting an aborted exchange", async () => {
+    const harness = createHarness();
+    const blocking = createBlockingPartialAbortStream();
+    promptStreamMock.mockImplementation(() => blocking.stream());
+
+    await harness.runSessionStart();
+    const pendingCommand = harness.command("btw", "partial question");
+    await flushAsyncWork();
+
+    const overlay = harness.latestOverlayComponent();
+    expect(transcriptText(overlay)).toContain("Partial answer");
+
+    overlay.input.onEscape?.();
+    await flushAsyncWork();
+    blocking.release();
+    await pendingCommand;
+
+    expect(transcriptText(overlay)).toContain("Partial answer");
+    expect(findLatest(transcriptEntries(overlay), (entry: any) => entry.type === "assistant-text")).toMatchObject({
+      text: "Partial answer",
+      streaming: false,
+    });
+    expect(overlay.summaryText.text).toContain("0 exchanges");
+    expect(getCustomEntries(harness.entries, "btw-thread-entry")).toHaveLength(0);
+  });
+
+  it("waits for abort settlement before submitting a follow-up", async () => {
+    const harness = createHarness();
+    const blocking = createBlockingToolStream();
+    promptStreamMock
+      .mockImplementationOnce(() => blocking.stream())
+      .mockImplementationOnce(() => streamAnswer("First follow-up after cancellation"))
+      .mockImplementationOnce(() => streamAnswer("Second follow-up after cancellation"));
+
+    await harness.runSessionStart();
+    const pendingCommand = harness.command("btw", "cancel this");
+    await flushAsyncWork();
+
+    const overlay = harness.latestOverlayComponent();
+    const record = subSessionRecords[0];
+    let releaseAbort!: () => void;
+    const abortPending = new Promise<void>((resolve) => {
+      releaseAbort = resolve;
+    });
+    record.session.abort.mockImplementationOnce(() => abortPending);
+
+    overlay.input.onEscape?.();
+    await flushAsyncWork();
+    overlay.input.onSubmit?.("first follow-up while cancelling");
+    overlay.input.onSubmit?.("second follow-up while cancelling");
+    await flushAsyncWork();
+
+    expect(record.session.prompt).toHaveBeenCalledTimes(1);
+    expect(record.session.abort).toHaveBeenCalledTimes(1);
+    expect(record.session.dispose).not.toHaveBeenCalled();
+    expect(transcriptText(overlay)).not.toContain("Agent is already processing");
+
+    blocking.release();
+    await pendingCommand;
+    releaseAbort();
+    await flushAsyncWork();
+    await flushAsyncWork();
+
+    expect(record.session.prompt).toHaveBeenCalledTimes(3);
+    expect(record.session.prompt).toHaveBeenNthCalledWith(2, "first follow-up while cancelling", { source: "extension" });
+    expect(record.session.prompt).toHaveBeenNthCalledWith(3, "second follow-up while cancelling", { source: "extension" });
+    expect(record.session.abort).toHaveBeenCalledTimes(1);
+    expect(record.session.dispose).not.toHaveBeenCalled();
+    expect(getCustomEntries(harness.entries, "btw-thread-entry")).toHaveLength(2);
+    expect(transcriptText(overlay)).toContain("First follow-up after cancellation");
+    expect(transcriptText(overlay)).toContain("Second follow-up after cancellation");
+    expect(transcriptText(overlay)).not.toContain("Agent is already processing");
+  });
+
+  it("does not revive a dismissed session after delayed prompt preflight", async () => {
+    const harness = createHarness();
+
+    await harness.runSessionStart();
+    await harness.command("btw", "");
+
+    const overlay = harness.latestOverlayComponent();
+    const record = subSessionRecords[0];
+    let releaseAuth!: (auth: TestAuthResult) => void;
+    const authPending = new Promise<TestAuthResult>((resolve) => {
+      releaseAuth = resolve;
+    });
+    harness.setAuthResolver(() => authPending);
+    harness.setConfiguredAuthResolver(() => true);
+
+    overlay.input.onSubmit?.("stale preflight follow-up");
+    await flushAsyncWork();
+    overlay.input.onEscape?.();
+    await flushAsyncWork();
+
+    expect(harness.overlayHandles.at(-1)?.hideCalls).toBe(1);
+    expect(record.session.dispose).toHaveBeenCalledTimes(1);
+    expect(record.session.prompt).not.toHaveBeenCalled();
+
+    releaseAuth({ ok: true, headers: { Authorization: "Bearer delayed" } });
+    await flushAsyncWork();
+    await flushAsyncWork();
+
+    expect(createAgentSessionMock).toHaveBeenCalledTimes(1);
+    expect(record.session.prompt).not.toHaveBeenCalled();
+    expect(getCustomEntries(harness.entries, "btw-thread-entry")).toHaveLength(0);
+    expect(harness.overlays).toHaveLength(1);
+  });
+
+  it("dismisses on a rapid second Escape while the first abort is still settling", async () => {
+    const harness = createHarness();
+    const blocking = createBlockingToolStream();
+    promptStreamMock.mockImplementation(() => blocking.stream());
+
+    await harness.runSessionStart();
+    const pendingCommand = harness.command("btw", "slow abort");
+    await flushAsyncWork();
+
+    const overlay = harness.latestOverlayComponent();
+    const record = subSessionRecords[0];
+    let releaseAbort!: () => void;
+    const abortPending = new Promise<void>((resolve) => {
+      releaseAbort = resolve;
+    });
+    record.session.abort.mockImplementationOnce(() => abortPending);
+
+    overlay.input.onEscape?.();
+    await flushAsyncWork();
+    expect(record.getIsStreaming()).toBe(true);
+    expect(overlay.statusText.text).toContain("Aborting");
+
+    overlay.input.onEscape?.();
+    await flushAsyncWork();
+    expect(harness.overlayHandles.at(-1)?.hideCalls).toBe(1);
+    expect(record.getListenerCount()).toBe(0);
+    expect(record.session.dispose).not.toHaveBeenCalled();
+
+    blocking.release();
+    await pendingCommand;
+    releaseAbort();
+    await flushAsyncWork();
+
+    expect(record.session.abort).toHaveBeenCalledTimes(1);
+    expect(record.session.dispose).toHaveBeenCalledTimes(1);
+  });
+
+  for (const handoffCommand of ["btw:inject", "btw:summarize"] as const) {
+    it(`waits for a first pending turn before ${handoffCommand}`, async () => {
+      const harness = createHarness();
+      const blocking = createBlockingSuccessStream("First pending answer");
+      promptStreamMock.mockImplementationOnce(() => blocking.stream());
+      if (handoffCommand === "btw:summarize") {
+        promptStreamMock.mockImplementationOnce(() => streamAnswer("Pending turn summary"));
+      }
+
+      await harness.runSessionStart();
+      const pendingTurn = harness.command("btw", "first pending question");
+      await flushAsyncWork();
+      const handoff = harness.command(handoffCommand, "");
+      await flushAsyncWork();
+
+      expect(harness.sentUserMessages).toHaveLength(0);
+      expect(harness.notifications.some((entry) => entry.message.includes("No BTW thread"))).toBe(false);
+
+      blocking.release();
+      await pendingTurn;
+      await handoff;
+
+      expect(harness.sentUserMessages).toHaveLength(1);
+      const content = String(harness.sentUserMessages[0]?.content);
+      if (handoffCommand === "btw:inject") {
+        expect(content).toContain("first pending question");
+        expect(content).toContain("First pending answer");
+      } else {
+        expect(content).toContain("Pending turn summary");
+      }
+    });
+  }
+
+  it("waits for cancellation before extracting a handoff", async () => {
+    const harness = createHarness();
+    const blocking = createBlockingToolStream();
+    promptStreamMock
+      .mockImplementationOnce(() => streamAnswer("Existing answer"))
+      .mockImplementationOnce(() => blocking.stream());
+
+    await harness.runSessionStart();
+    await harness.command("btw", "existing question");
+
+    const overlay = harness.latestOverlayComponent();
+    const record = subSessionRecords[0];
+    overlay.input.onSubmit?.("cancelling question");
+    await flushAsyncWork();
+
+    let releaseAbort!: () => void;
+    const abortPending = new Promise<void>((resolve) => {
+      releaseAbort = resolve;
+    });
+    record.session.abort.mockImplementationOnce(() => abortPending);
+
+    overlay.input.onEscape?.();
+    await flushAsyncWork();
+    const handoff = harness.command("btw:inject", "");
+    await flushAsyncWork();
+
+    expect(harness.sentUserMessages).toHaveLength(0);
+
+    blocking.release();
+    await flushAsyncWork();
+    releaseAbort();
+    await handoff;
+
+    expect(harness.sentUserMessages).toHaveLength(1);
+    expect(harness.sentUserMessages[0]?.content).toContain("existing question");
+    expect(harness.sentUserMessages[0]?.content).toContain("Existing answer");
+    expect(harness.sentUserMessages[0]?.content).not.toContain("cancelling question");
+  });
+
+  it("excludes an aborted turn from a later handoff", async () => {
+    const harness = createHarness();
+    const blocking = createBlockingToolStream();
+    promptStreamMock
+      .mockImplementationOnce(() => blocking.stream())
+      .mockImplementationOnce(() => streamAnswer("Follow-up answer"));
+
+    await harness.runSessionStart();
+    const pendingCommand = harness.command("btw", "aborted question");
+    await flushAsyncWork();
+
+    const overlay = harness.latestOverlayComponent();
+    overlay.input.onEscape?.();
+    await flushAsyncWork();
+    blocking.release();
+    await pendingCommand;
+
+    overlay.input.onSubmit?.("completed follow-up");
+    await flushAsyncWork();
+    await harness.command("btw:inject", "");
+
+    expect(harness.sentUserMessages).toHaveLength(1);
+    expect(harness.sentUserMessages[0]?.content).toContain("completed follow-up");
+    expect(harness.sentUserMessages[0]?.content).toContain("Follow-up answer");
+    expect(harness.sentUserMessages[0]?.content).not.toContain("aborted question");
+  });
+
+  it("allows main-session input to proceed while the BTW sub-session is streaming", async () => {
+    const harness = createHarness();
+    const blocking = createBlockingSuccessStream("Long-running answer");
+    promptStreamMock.mockImplementation(() => blocking.stream());
+
+    await harness.runSessionStart();
+    await harness.command("btw", "");
+
+    const overlay = harness.latestOverlayComponent();
+    const submitResult = overlay.input.onSubmit?.("inspect package metadata");
+    expect(submitResult).toBeUndefined();
+
+    await flushAsyncWork();
+
+    const record = subSessionRecords[0];
+    expect(record.getIsStreaming()).toBe(true);
+    expect(overlay.statusText.text).toContain("running tool: read");
+    expect(harness.baseCtx.isIdle()).toBe(true);
+
+    const mainTurn = harness.startMainSessionInput("continue the main task");
+    expect(harness.mainSessionInputs).toEqual(["continue the main task"]);
+    expect(harness.baseCtx.isIdle()).toBe(false);
+    expect(record.getIsStreaming()).toBe(true);
+    expect(findLatest(transcriptEntries(overlay), (entry: any) => entry.type === "tool-call")).toMatchObject({
+      toolName: "read",
+      args: "package.json",
+    });
+
+    blocking.release();
+    await flushAsyncWork();
+
+    expect(record.getIsStreaming()).toBe(false);
+    expect(overlay.statusText.text).toContain("Ready for a follow-up");
+    expect(getCustomEntries(harness.entries, "btw-thread-entry")).toHaveLength(1);
+    expect(transcriptText(overlay)).toContain("Long-running answer");
+
+    mainTurn.finish();
+    expect(harness.baseCtx.isIdle()).toBe(true);
+  });
+
+  it("dismisses immediately on Escape when the side session is idle", async () => {
+    const harness = createHarness();
+
+    await harness.runSessionStart();
+    await harness.command("btw", "");
+
+    const overlay = harness.latestOverlayComponent();
+    const record = subSessionRecords[0];
+    expect(record.getIsStreaming()).toBe(false);
+
+    overlay.input.onEscape?.();
+    await flushAsyncWork();
+
+    expect(record.session.dispose).toHaveBeenCalledTimes(1);
+    expect(harness.overlayHandles.at(-1)?.hideCalls).toBe(1);
+  });
+
+  it("ignores late session events after overlay dismissal disposes the sub-session", async () => {
+    const harness = createHarness();
+
+    await harness.runSessionStart();
+    await harness.command("btw", "");
+
+    const overlay = harness.latestOverlayComponent();
+    const firstRecord = subSessionRecords[0];
+    expect(firstRecord.getListenerCount()).toBe(1);
+
+    overlay.input.onEscape?.();
+    await flushAsyncWork();
+
+    expect(firstRecord.session.abort).toHaveBeenCalledTimes(1);
+    expect(firstRecord.session.dispose).toHaveBeenCalledTimes(1);
+    expect(firstRecord.getListenerCount()).toBe(0);
+
+    firstRecord.emit({ type: "turn_start" });
+
+    expect(overlay.getTranscriptEntries()).toEqual([]);
+
+    await harness.command("btw", "");
+    const reopened = harness.latestOverlayComponent();
+    expect(transcriptEntries(reopened)).toEqual([]);
+    expect(transcriptText(reopened)).toContain("No BTW thread yet. Ask a side question to start one.");
+  });
+
+  it("keeps the thread after Escape dismissal and restores it on reopen", async () => {
+    const harness = createHarness();
+    promptStreamMock.mockImplementation(() => streamAnswer("First answer"));
+
+    await harness.runSessionStart();
+    await harness.command("btw", "first question");
+
+    expect(getCustomEntries(harness.entries, "btw-thread-entry")).toHaveLength(1);
+    expect(harness.overlayHandles).toHaveLength(1);
+
+    const firstRecord = subSessionRecords[0];
+    const overlay = harness.latestOverlayComponent();
+    overlay.input.onEscape?.();
+    await flushAsyncWork();
+
+    expect(firstRecord.session.abort).toHaveBeenCalledTimes(1);
+    expect(firstRecord.session.dispose).toHaveBeenCalledTimes(1);
+    expect(firstRecord.getListenerCount()).toBe(0);
+
+    await harness.command("btw", "");
+    expect(harness.overlayHandles).toHaveLength(2);
+
+    const reopened = harness.latestOverlayComponent();
+    const transcript = transcriptText(reopened);
+    expect(transcript).toContain("You  first question");
+    expect(transcript).toContain("Assistant");
+    expect(transcript).toContain("First answer");
+    expect(reopened.statusText.text).toContain("Ready for a follow-up");
+  });
+
+  it("supports an in-place follow-up and preserves both turns in one thread", async () => {
+    const harness = createHarness();
+    promptStreamMock
+      .mockImplementationOnce(() => streamAnswer("First answer"))
+      .mockImplementationOnce(() => streamAnswer("Second answer"));
+
+    await harness.runSessionStart();
+    await harness.command("btw", "first question");
+
+    const overlay = harness.latestOverlayComponent();
+    overlay.input.onSubmit?.("follow-up question");
+    await flushAsyncWork();
+
+    const threadEntries = getCustomEntries(harness.entries, "btw-thread-entry");
+    expect(threadEntries).toHaveLength(2);
+
+    const transcript = transcriptText(overlay);
+    expect(transcript).toContain("You  first question");
+    expect(transcript).toContain("First answer");
+    expect(transcript).toContain("You  follow-up question");
+    expect(transcript).toContain("Second answer");
+    expect(overlay.statusText.text).toContain("Ready for a follow-up");
+  });
+
+  it("maps turn, tool, thinking, and assistant events into transcript entries", async () => {
+    const harness = createHarness();
+    promptStreamMock.mockImplementation(async function* () {
+      yield { type: "thinking_delta" as const, delta: "Inspecting package.json" };
+      yield { type: "tool_execution_start" as const, toolName: "read", args: { path: "package.json" } };
+      yield {
+        type: "tool_execution_end" as const,
+        toolName: "read",
+        result: { content: [{ type: "text", text: '{"name":"pi-btw"}' }] },
+      };
+      yield { type: "text_delta" as const, delta: "The package is pi-btw." };
+      yield {
+        type: "done" as const,
+        message: {
+          ...makeAssistantMessage("The package is pi-btw."),
+          content: buildAssistantContent("Inspecting package.json", "The package is pi-btw."),
+        },
+      };
+    });
+
+    await harness.runSessionStart();
+    await harness.command("btw", "read package metadata");
+
+    const overlay = harness.latestOverlayComponent();
+    const entries = transcriptEntries(overlay);
+
+    expect(entries.map((entry: any) => entry.type)).toEqual([
+      "turn-boundary",
+      "user-message",
+      "thinking",
+      "tool-call",
+      "tool-result",
+      "assistant-text",
+      "turn-boundary",
+    ]);
+    expect(entries[0]).toMatchObject({ type: "turn-boundary", phase: "start" });
+    expect(entries[1]).toMatchObject({ type: "user-message", text: "read package metadata" });
+    expect(entries[2]).toMatchObject({ type: "thinking", text: "Inspecting package.json", streaming: false });
+    expect(entries[3]).toMatchObject({ type: "tool-call", toolName: "read", args: "package.json" });
+    expect(entries[4]).toMatchObject({
+      type: "tool-result",
+      toolName: "read",
+      content: '{"name":"pi-btw"}',
+      truncated: false,
+      isError: false,
+      streaming: false,
+    });
+    expect(entries[5]).toMatchObject({ type: "assistant-text", text: "The package is pi-btw.", streaming: false });
+    expect(entries[6]).toMatchObject({ type: "turn-boundary", phase: "end" });
+  });
+
+  it("renders tool, thinking, result, and turn-separator rows in the overlay transcript", async () => {
+    const harness = createHarness([], {
+      theme: {
+        fg: (name: string, text: string) => `<fg:${name}>${text}</fg:${name}>`,
+        bg: (name: string, text: string) => `<bg:${name}>${text}</bg:${name}>`,
+        italic: (text: string) => `<italic>${text}</italic>`,
+        bold: (text: string) => `<bold>${text}</bold>`,
+      },
+    });
+    const longToolResult = ["line 1", "line 2", "x".repeat(420)].join("\n");
+
+    promptStreamMock
+      .mockImplementationOnce(async function* () {
+        yield { type: "thinking_delta" as const, delta: "Inspecting package.json" };
+        yield { type: "tool_execution_start" as const, toolName: "read", args: { path: "package.json" } };
+        yield {
+          type: "tool_execution_end" as const,
+          toolName: "read",
+          result: { content: [{ type: "text", text: longToolResult }] },
+        };
+        yield { type: "text_delta" as const, delta: "The package is pi-btw." };
+        yield {
+          type: "done" as const,
+          message: {
+            ...makeAssistantMessage("The package is pi-btw."),
+            content: buildAssistantContent("Inspecting package.json", "The package is pi-btw."),
+          },
+        };
+      })
+      .mockImplementationOnce(() => streamAnswer("Second answer"));
+
+    await harness.runSessionStart();
+    await harness.command("btw", "read package metadata");
+
+    const overlay = harness.latestOverlayComponent();
+    overlay.input.onSubmit?.("second question");
+    await flushAsyncWork();
+
+    const transcript = transcriptText(overlay);
+    expect(transcript).toContain("<bg:toolPendingBg>");
+    expect(transcript).toContain("<italic><fg:warning>Inspecting package.json</fg:warning></italic>");
+    expect(transcript).toContain("<bold>read</bold>");
+    expect(transcript).toContain("package.json");
+    expect(transcript).toContain("↳ result");
+    expect(transcript).toContain("(truncated)");
+    expect(transcript).toContain("line 1");
+    expect(transcript).toContain("    <fg:dim>line 1</fg:dim>");
+    expect(transcript).toContain("────────────────");
+    expect(transcript).toContain("second question");
+    expect(transcript).toContain("Second answer");
+    expect(transcript.indexOf("↳ result")).toBeGreaterThan(transcript.indexOf("<bold>read</bold>"));
+    expect(transcript.indexOf("second question")).toBeGreaterThan(transcript.indexOf("────────────────"));
+  });
+
+  it("transcript inspection exposes streaming and failure state", async () => {
+    const harness = createHarness();
+    const failing = createStreamingFailureStream();
+    promptStreamMock.mockImplementation(() => failing.stream());
+
+    await harness.runSessionStart();
+    const pendingCommand = harness.command("btw", "read package metadata");
+    await flushAsyncWork();
+
+    const overlay = harness.latestOverlayComponent();
+    let entries = transcriptEntries(overlay);
+    expect(findLatest(entries, (entry: any) => entry.type === "thinking")).toMatchObject({
+      text: "Inspecting package.json",
+      streaming: true,
+    });
+    expect(findLatest(entries, (entry: any) => entry.type === "tool-call")).toMatchObject({
+      toolName: "read",
+      args: "package.json",
+    });
+    expect(entries.some((entry: any) => entry.type === "tool-result")).toBe(false);
+
+    failing.release();
+    await pendingCommand;
+
+    entries = transcriptEntries(overlay);
+    expect(findLatest(entries, (entry: any) => entry.type === "tool-result")).toMatchObject({
+      toolName: "read",
+      content: '{"name":"pi-btw"}',
+      truncated: false,
+      isError: false,
+      streaming: false,
+    });
+    expect(findLatest(entries, (entry: any) => entry.type === "assistant-text")).toMatchObject({
+      text: "❌ Sub-session prompt exploded",
+      streaming: false,
+    });
+    expect(overlay.statusText.text).toContain("Request failed. Thread preserved for retry or follow-up.");
+  });
+
+  it("updates assistant transcript text incrementally while the BTW response streams", async () => {
+    const harness = createHarness();
+    const blocking = createBlockingAnswerStream("Partial answer");
+    promptStreamMock.mockImplementation(() => blocking.stream());
+
+    await harness.runSessionStart();
+    const pendingCommand = harness.command("btw", "stream it");
+    await flushAsyncWork();
+
+    const overlay = harness.latestOverlayComponent();
+    expect(findLatest(transcriptEntries(overlay), (entry: any) => entry.type === "assistant-text")).toMatchObject({
+      text: "Partial",
+      streaming: true,
+    });
+    expect(overlay.statusText.text).toContain("streaming");
+
+    blocking.release();
+    await pendingCommand;
+
+    expect(findLatest(transcriptEntries(overlay), (entry: any) => entry.type === "assistant-text")).toMatchObject({
+      text: "Partial answer",
+      streaming: false,
+    });
+    expect(overlay.statusText.text).toContain("Ready for a follow-up");
+  });
+
+  it("clears the modal composer after a follow-up is submitted", async () => {
+    const harness = createHarness();
+    promptStreamMock
+      .mockImplementationOnce(() => streamAnswer("First answer"))
+      .mockImplementationOnce(() => streamAnswer("Second answer"));
+
+    await harness.runSessionStart();
+    await harness.command("btw", "first question");
+
+    const overlay = harness.latestOverlayComponent();
+    overlay.input.setValue("follow-up question");
+    overlay.input.onSubmit?.("follow-up question");
+    await flushAsyncWork();
+
+    expect(overlay.getDraft()).toBe("");
+  });
+
+  it("applies distinct theme treatment to user and assistant transcript rows", async () => {
+    const harness = createHarness([], {
+      theme: {
+        fg: (name: string, text: string) => `<fg:${name}>${text}</fg:${name}>`,
+        bg: (name: string, text: string) => `<bg:${name}>${text}</bg:${name}>`,
+        italic: (text: string) => `<italic>${text}</italic>`,
+        bold: (text: string) => `<bold>${text}</bold>`,
+      },
+    });
+    promptStreamMock.mockImplementation(() => streamAnswer("First answer"));
+
+    await harness.runSessionStart();
+    await harness.command("btw", "first question");
+
+    const transcript = transcriptText(harness.latestOverlayComponent());
+    expect(transcript).toContain("<bg:userMessageBg>");
+    expect(transcript).toContain("<fg:accent>");
+    expect(transcript).toContain("<bg:customMessageBg>");
+    expect(transcript).toContain("<fg:success>");
+  });
+
+  it("renders overlay Markdown and wraps tables within the dialog width", async () => {
+    const harness = createHarness();
+    const answer = [
+      "# Result",
+      "",
+      "**Ready**",
+      "",
+      "| Check | Status | Detail |",
+      "| --- | --- | --- |",
+      "| Markdown | pass | Tables wrap in narrow overlays |",
+    ].join("\n");
+    promptStreamMock.mockImplementation(() => streamAnswer(answer));
+
+    await harness.runSessionStart();
+    await harness.command("btw", "show the result");
+
+    const rendered = harness.latestOverlayComponent().render(72);
+    const transcript = rendered.join("\n");
+    expect(transcript).toContain("<heading><bold>Result</bold></heading>");
+    expect(transcript).toContain("<bold>Ready</bold>");
+    expect(transcript).toContain("Tables");
+    expect(transcript).toContain("┌");
+    expect(transcript).toContain("┘");
+    expect(transcript).not.toContain("| --- | --- | --- |");
+    expect(rendered.every((line: string) => visibleWidth(line) <= 72)).toBe(true);
+
+    const resized = harness.latestOverlayComponent().render(90);
+    expect(resized.join("\n")).toContain("Tables wrap in narrow overlays");
+    expect(resized.every((line: string) => visibleWidth(line) <= 90)).toBe(true);
+  });
+
+  it("renders saved BTW notes as Markdown, including legacy note details", () => {
+    const harness = createHarness();
+    const renderMessage = harness.messageRenderers.get("btw-note");
+    expect(renderMessage).toBeTypeOf("function");
+
+    const box = renderMessage(
+      {
+        customType: "btw-note",
+        content: "Q: legacy question\n\nA: raw answer",
+        details: {
+          question: "legacy question",
+          answer: "| Check | Status |\n| --- | --- |\n| Saved note | pass |",
+          provider: "test-provider",
+          model: "test-model",
+          api: "openai-responses",
+          thinkingLevel: "off",
+        },
+      },
+      { expanded: false },
+      harness.baseCtx.ui.theme,
+    );
+    const markdown = box.children[1];
+    const rendered = markdown.render(56).join("\n");
+
+    expect(rendered).toContain("<bold>Question</bold>");
+    expect(rendered).toContain("<bold>Answer</bold>");
+    expect(rendered).toContain("Saved note");
+    expect(rendered).toContain("┌");
+    expect(rendered).toContain("┘");
+    expect(rendered).not.toContain("| --- | --- |");
+  });
+
+  it("surfaces missing credentials as an explicit error without creating a thread entry", async () => {
+    const harness = createHarness();
+    harness.setCredentials(false);
+
+    await harness.runSessionStart();
+    await harness.command("btw", "why did this fail?");
+
+    expect(getCustomEntries(harness.entries, "btw-thread-entry")).toHaveLength(0);
+    const overlay = harness.latestOverlayComponent();
+    overlay.refresh();
+    expect(overlay.statusText.text).toContain("No credentials available for test-provider/test-model.");
+    expect(harness.notifications.at(-1)).toEqual({
+      message: "No credentials available for test-provider/test-model.",
+      type: "error",
+    });
+  });
+
+  it("displays inline BTW responses as visible notes in RPC mode", async () => {
+    const harness = createHarness([], { contextMode: "rpc" });
+    promptStreamMock.mockImplementation(() => streamAnswer("RPC answer"));
+
+    await harness.runSessionStart();
+    await harness.command("btw", "rpc question");
+
+    expect(harness.overlays).toHaveLength(0);
+    expect(harness.sentMessages).toHaveLength(1);
+    expect(harness.sentMessages[0]).toEqual({
+      message: expect.objectContaining({
+        customType: "btw-note",
+        display: true,
+        content: "**Question**\n\nrpc question\n\n**Answer**\n\nRPC answer",
+      }),
+      options: undefined,
+    });
+    expect(getCustomEntries(harness.entries, "btw-thread-entry")).toHaveLength(1);
+  });
+
+  it("does not duplicate an explicitly saved RPC response and queues it while the main session is busy", async () => {
+    const harness = createHarness([], { contextMode: "rpc" });
+    promptStreamMock.mockImplementation(() => streamAnswer("Busy RPC answer"));
+    harness.setIdle(false);
+
+    await harness.runSessionStart();
+    await harness.command("btw", "--save busy question");
+
+    expect(harness.sentMessages).toHaveLength(1);
+    expect(harness.sentMessages[0]).toEqual({
+      message: expect.objectContaining({
+        customType: "btw-note",
+        display: true,
+        content: "**Question**\n\nbusy question\n\n**Answer**\n\nBusy RPC answer",
+      }),
+      options: { deliverAs: "followUp" },
+    });
+  });
+
+  for (const commandName of ["btw", "btw:tangent", "btw:new"] as const) {
+    it(`guides ${commandName} users without clearing their thread when RPC cannot open a composer`, async () => {
+      const existingEntry = {
+        type: "custom",
+        customType: "btw-thread-entry",
+        data: {
+          question: "existing question",
+          thinking: "",
+          answer: "existing answer",
+          provider: "test-provider",
+          model: "test-model",
+          api: "openai-responses",
+          thinkingLevel: "off",
+          timestamp: 1,
+        },
+      } as SessionEntry;
+      const harness = createHarness([existingEntry], { contextMode: "rpc" });
+
+      await harness.runSessionStart();
+      await harness.command(commandName, "");
+
+      expect(createAgentSessionMock).not.toHaveBeenCalled();
+      expect(harness.overlays).toHaveLength(0);
+      expect(getCustomEntries(harness.entries, "btw-thread-entry")).toHaveLength(1);
+      expect(getCustomEntries(harness.entries, "btw-thread-reset")).toHaveLength(0);
+      expect(harness.notifications.at(-1)).toMatchObject({
+        message: expect.stringContaining("Pass the question inline instead."),
+        type: "warning",
+      });
+    });
+  }
+
+  it("keeps BTW in a top-centered non-capturing overlay and does not leave a persistent widget above the main input", async () => {
+    const harness = createHarness();
+    promptStreamMock.mockImplementation(() => streamAnswer("Overlay answer"));
+
+    await harness.runSessionStart();
+    await harness.command("btw", "overlay question");
+
+    expect(harness.overlays.at(-1)?.factoryOptions).toMatchObject({
+      overlay: true,
+      overlayOptions: {
+        anchor: "top-center",
+        nonCapturing: true,
+      },
+    });
+    expect(harness.widgets.some((entry) => entry.key === "btw" && typeof entry.content === "function")).toBe(false);
+  });
+
+  it("defaults to the framed window width and advertises the Ctrl+Shift+W width toggle", async () => {
+    const harness = createHarness();
+    promptStreamMock.mockImplementation(() => streamAnswer("Overlay answer"));
+
+    await harness.runSessionStart();
+    await harness.command("btw", "overlay question");
+
+    expect(harness.overlays.at(-1)?.factoryOptions?.overlayOptions).toMatchObject({
+      width: "90%",
+      margin: { top: 1, left: 2, right: 2 },
+    });
+
+    const overlay = harness.latestOverlayComponent();
+    overlay.refresh();
+    expect(overlay.hintsText.text).toContain("Ctrl+Shift+W width");
+  });
+
+  it("toggles the overlay between window and full-width layouts on Ctrl+Shift+W, preserving the draft", async () => {
+    const harness = createHarness();
+    promptStreamMock.mockImplementation(() => streamAnswer("Overlay answer"));
+
+    await harness.runSessionStart();
+    await harness.command("btw", "overlay question");
+
+    const overlay = harness.latestOverlayComponent();
+    overlay.setDraft("kept draft");
+
+    // Kitty keyboard protocol: w (119) with Ctrl+Shift modifiers (5 + 1).
+    overlay.handleInput("\x1b[119;6u");
+    await flushAsyncWork();
+
+    expect(harness.overlays.at(-1)?.factoryOptions?.overlayOptions).toMatchObject({
+      width: "100%",
+      margin: { top: 1 },
+    });
+    const fullOverlay = harness.latestOverlayComponent();
+    expect(fullOverlay.getDraft()).toBe("kept draft");
+    expect(fullOverlay.statusText.text).toContain("Full-width mode");
+
+    // Ctrl+Shift+W again restores the framed window layout.
+    await harness.shortcut("ctrl+shift+w");
+    await flushAsyncWork();
+
+    expect(harness.overlays.at(-1)?.factoryOptions?.overlayOptions).toMatchObject({
+      width: "90%",
+      margin: { top: 1, left: 2, right: 2 },
+    });
+    const windowOverlay = harness.latestOverlayComponent();
+    expect(windowOverlay.getDraft()).toBe("kept draft");
+    expect(windowOverlay.statusText.text).toContain("Window mode");
+  });
+
+  it("keeps the box frame in window mode but drops all border glyphs in full-width mode", async () => {
+    const harness = createHarness();
+    promptStreamMock.mockImplementation(() => streamAnswer("Framed answer"));
+
+    await harness.runSessionStart();
+    await harness.command("btw", "overlay question");
+
+    // Window mode: full box frame with corners and vertical bars.
+    const windowRender = harness.latestOverlayComponent().render(80);
+    expect(windowRender[0]).toContain("┌");
+    expect(windowRender.at(-1)).toContain("└");
+    expect(windowRender.some((line: string) => line.includes("│"))).toBe(true);
+
+    const overlay = harness.latestOverlayComponent();
+    overlay.handleInput("\x1b[119;6u");
+    await flushAsyncWork();
+
+    // Full-width mode: horizontal rules only, no corners and no side bars, so a
+    // Shift+drag selection can't pick up border glyphs beside the text.
+    const fullRender = harness.latestOverlayComponent().render(80);
+    expect(fullRender[0]).toContain("─");
+    expect(fullRender[0]).not.toContain("┌");
+    expect(fullRender[0]).not.toContain("┐");
+    expect(fullRender.at(-1)).not.toContain("└");
+    expect(fullRender.at(-1)).not.toContain("┘");
+    expect(fullRender.every((line: string) => !line.includes("│"))).toBe(true);
+  });
+
+  it("does not change Pi-owned terminal mouse reporting in fullscreen mode", async () => {
+    const harness = createHarness([], { tuiMode: "fullscreen" });
+
+    await harness.runSessionStart();
+    await harness.command("btw", "");
+
+    const overlay = harness.latestOverlayComponent();
+    overlay.input.onEscape?.();
+    await flushAsyncWork();
+
+    expect(harness.terminalWrites).toEqual([]);
+  });
+
+  it("leaves terminal-owned mouse reporting unchanged in regular mode", async () => {
+    const harness = createHarness([], { tuiMode: "regular" });
+
+    await harness.runSessionStart();
+    await harness.command("btw", "");
+
+    expect(harness.terminalWrites).toEqual([]);
+
+    const overlay = harness.latestOverlayComponent();
+    overlay.input.onEscape?.();
+    await flushAsyncWork();
+
+    expect(harness.terminalWrites).toEqual([]);
+  });
+
+  it("toggles BTW overlay focus with the registered focus shortcuts without closing it", async () => {
+    const harness = createHarness();
+
+    await harness.runSessionStart();
+    await harness.command("btw", "");
+
+    const overlay = harness.latestOverlayComponent();
+    const handle = harness.overlayHandles.at(-1);
+    expect(handle?.isFocused()).toBe(true);
+    expect(overlay.focused).toBe(true);
+
+    // Kitty keyboard protocol: b (98) with Ctrl+Shift modifiers (5 + 1).
+    overlay.handleInput("\x1b[98;6u");
+
+    expect(handle?.isFocused()).toBe(false);
+    expect(handle?.isHidden()).toBe(false);
+    expect(overlay.focused).toBe(false);
+
+    await harness.shortcut("ctrl+shift+b");
+
+    expect(handle?.isFocused()).toBe(true);
+    expect(handle?.isHidden()).toBe(false);
+    expect(overlay.focused).toBe(true);
+
+    overlay.refresh();
+    expect(overlay.hintsText.text).toContain("Ctrl+Shift+B");
+  });
+
+  it("marks the overlay input focused when BTW opens so the cursor stays in the composer", async () => {
+    const harness = createHarness();
+
+    await harness.runSessionStart();
+    await harness.command("btw", "");
+
+    const overlay = harness.latestOverlayComponent();
+    expect(harness.overlayHandles.at(-1)?.isFocused()).toBe(true);
+    expect(overlay.focused).toBe(true);
+    expect(overlay.input.focused).toBe(true);
+  });
+
+  it("forwards terminal input from the focused overlay to the embedded BTW input", async () => {
+    const harness = createHarness();
+
+    await harness.runSessionStart();
+    await harness.command("btw", "");
+
+    const overlay = harness.latestOverlayComponent();
+    const inputHandleSpy = vi.spyOn(overlay.input, "handleInput");
+
+    overlay.handleInput("abc");
+
+    expect(inputHandleSpy).toHaveBeenCalledWith("abc");
+  });
+
+  it("renders BTW as a bordered dialog with an internal transcript viewport", async () => {
+    const harness = createHarness();
+    const longAnswer = Array.from({ length: 24 }, (_, index) => `line ${index + 1} of a long answer`).join("\n");
+
+    promptStreamMock
+      .mockImplementationOnce(() => streamAnswer(longAnswer))
+      .mockImplementationOnce(() => streamAnswer(longAnswer));
+
+    await harness.runSessionStart();
+    await harness.command("btw", "first question");
+
+    const overlay = harness.latestOverlayComponent();
+    const firstRender = overlay.render(80);
+
+    overlay.input.onSubmit?.("second question");
+    await flushAsyncWork();
+
+    const secondRender = overlay.render(80);
+
+    expect(firstRender[0]).toContain("┌");
+    expect(firstRender.at(-1)).toContain("└");
+    expect(secondRender[0]).toContain("┌");
+    expect(secondRender.at(-1)).toContain("└");
+    expect(firstRender.length).toBe(secondRender.length);
+  });
+
+  it("keeps the BTW modal at a fixed reading height, uses one frame color, and preserves stacked body indentation", async () => {
+    const harness = createHarness([], {
+      theme: {
+        fg: (name: string, text: string) => `<fg:${name}>${text}</fg:${name}>`,
+        bg: (name: string, text: string) => `<bg:${name}>${text}</bg:${name}>`,
+        italic: (text: string) => `<italic>${text}</italic>`,
+        bold: (text: string) => `<bold>${text}</bold>`,
+      },
+    });
+    promptStreamMock.mockImplementationOnce(() => streamAnswer("First answer"));
+
+    await harness.runSessionStart();
+    await harness.command("btw", "");
+
+    const overlay = harness.latestOverlayComponent();
+    const emptyLines = overlay.render(80);
+
+    overlay.input.onSubmit?.("first question");
+    await flushAsyncWork();
+
+    const populatedLines = overlay.render(80);
+    const emptyStateLine = emptyLines.find((line: string) => line.includes("No BTW thread yet."));
+    const inputLine = populatedLines.at(-3);
+    const assistantBodyLine = populatedLines.find((line: string) => line.includes("First answer"));
+
+    expect(emptyLines.length).toBe(populatedLines.length);
+    expect(emptyLines[0]).toContain("<fg:border>┌");
+    expect(emptyLines[0]).not.toContain("<fg:accent>┌");
+    expect(emptyLines.at(-1)).toContain("<fg:border>└");
+    expect(emptyLines.at(-1)).not.toContain("<fg:accent>└");
+    expect(emptyStateLine).toContain("<fg:border>│</fg:border><fg:dim>No BTW thread yet.");
+    expect(emptyStateLine).not.toContain("<fg:border>│</fg:border> <fg:dim>No BTW thread yet.");
+    expect(assistantBodyLine).toContain("<fg:border>│</fg:border>    First answer");
+    expect(inputLine).toContain("<fg:border>│</fg:border>> ");
+    expect(inputLine).not.toContain("\x1b_pi:c\x07");
+  });
+
+  it("/btw:new appends a reset marker, disposes the old sub-session, clears prior hidden thread state, stays contextual, and reopens a fresh thread", async () => {
+    const harness = createHarness([
+      {
+        id: "leaf",
+        type: "message",
+        role: "user",
+        content: [{ type: "text", text: "main session task" }],
+        timestamp: Date.now(),
+      } as SessionEntry,
+    ]);
+    promptStreamMock
+      .mockImplementationOnce((_record: unknown, _text: string, context: StreamContext) => {
+        const texts = context.messages.map((message) => (message.content[0] as any)?.text ?? "");
+        expect(texts).toContain("main session task");
+        expect(texts).toContain("first question");
+        return streamAnswer("First answer");
+      })
+      .mockImplementationOnce((_record: unknown, _text: string, context: StreamContext) => {
+        const texts = context.messages.map((message) => (message.content[0] as any)?.text ?? "");
+        expect(texts).toContain("main session task");
+        expect(texts).not.toContain("first question");
+        expect(texts).not.toContain("First answer");
+        expect(texts).toContain("replacement question");
+        return streamAnswer("Replacement answer");
+      });
+
+    await harness.runSessionStart();
+    await harness.command("btw", "first question");
+    const firstRecord = subSessionRecords[0];
+
+    await harness.command("btw:new", "replacement question");
+
+    expect(firstRecord.session.abort).toHaveBeenCalledTimes(1);
+    expect(firstRecord.session.dispose).toHaveBeenCalledTimes(1);
+    expect(firstRecord.getListenerCount()).toBe(0);
+    expect(subSessionRecords[1]?.session).not.toBe(firstRecord.session);
+
+    const postResetOverlay = harness.latestOverlayComponent();
+    const postResetTranscript = transcriptText(postResetOverlay);
+    expect(postResetTranscript).not.toContain("You  first question");
+    expect(postResetTranscript).not.toContain("First answer");
+    expect(postResetTranscript).toContain("You  replacement question");
+    expect(postResetTranscript).toContain("Replacement answer");
+
+    await harness.command("btw:new", "");
+
+    const resets = getCustomEntries(harness.entries, "btw-thread-reset");
+    expect(resets).toHaveLength(2);
+    expect(resets.at(-1)?.data).toMatchObject({ mode: "contextual" });
+
+    const threadEntries = getCustomEntries(harness.entries, "btw-thread-entry");
+    expect(threadEntries).toHaveLength(2);
+
+    const overlay = harness.latestOverlayComponent();
+    const transcript = transcriptText(overlay);
+    expect(transcript).toContain("No BTW thread yet. Ask a side question to start one.");
+    expect(overlay.statusText.text).toContain("Started a fresh BTW thread.");
+  });
+
+  it("switching between /btw:tangent and /btw appends reset markers and tangent requests omit inherited main-session conversation", async () => {
+    const mainVisibleNote = {
+      type: "custom",
+      role: "custom",
+      customType: "btw-note",
+      content: "saved btw note",
+    } as SessionEntry;
+    const mainRegularUser = {
+      type: "message",
+      role: "user",
+      content: [{ type: "text", text: "main session task" }],
+      timestamp: Date.now(),
+    } as SessionEntry;
+    const harness = createHarness([mainVisibleNote, mainRegularUser]);
+
+    await harness.runSessionStart();
+    await harness.command("btw", "contextual start");
+    await harness.command("btw:tangent", "tangent start");
+    await harness.command("btw", "contextual again");
+
+    const resets = getCustomEntries(harness.entries, "btw-thread-reset");
+    expect(resets).toHaveLength(2);
+    expect(resets.map((entry) => (entry.data as any)?.mode)).toEqual(["tangent", "contextual"]);
+
+    const streamCalls = promptStreamMock.mock.calls as Array<[unknown, string, StreamContext]>;
+    expect(streamCalls.length).toBeGreaterThanOrEqual(2);
+
+    const callTexts = streamCalls.map((call) => call[2].messages.map((message) => (message.content[0] as any)?.text ?? ""));
+    const tangentTexts = callTexts.find((texts) => texts.at(-1) === "tangent start");
+    expect(tangentTexts).toBeDefined();
+    expect(tangentTexts).not.toContain("main session task");
+    expect(tangentTexts).not.toContain("saved btw note");
+
+    const contextualTexts = callTexts.find((texts) => texts.at(-1) === "contextual start");
+    if (contextualTexts) {
+      expect(contextualTexts).not.toContain("saved btw note");
+    }
+
+    const overlay = harness.latestOverlayComponent();
+    const transcript = transcriptText(overlay);
+    expect(transcript).toContain("You  contextual again");
+    expect(transcript).toContain("default:contextual again");
+    expect(transcript).not.toContain("You  tangent start");
+    expect(transcript).not.toContain("default:tangent start");
+  });
+
+  it("/btw:clear dismisses the overlay, disposes the active sub-session, appends a reset marker, and restore only rehydrates entries after the last reset", async () => {
+    const seedEntries: SessionEntry[] = [
+      { type: "custom", customType: "btw-thread-entry", data: { question: "old q", thinking: "", answer: "old a", provider: "p", model: "m", thinkingLevel: "off", timestamp: 1 } },
+      { type: "custom", customType: "btw-thread-reset", data: { timestamp: 2, mode: "tangent" } },
+      { type: "custom", customType: "btw-thread-entry", data: { question: "new q", thinking: "", answer: "new a", provider: "p", model: "m", thinkingLevel: "off", timestamp: 3 } },
+    ];
+    const harness = createHarness(seedEntries);
+
+    await harness.runEvent("session_start");
+    await harness.command("btw", "");
+    let overlay = harness.latestOverlayComponent();
+    expect(transcriptText(overlay)).toContain("You  new q");
+    expect(transcriptText(overlay)).not.toContain("You  old q");
+
+    await harness.command("btw", "restore-visible");
+    expect(harness.overlayHandles).toHaveLength(1);
+
+    const activeRecord = subSessionRecords[0];
+    const resetCountBeforeClear = getCustomEntries(harness.entries, "btw-thread-reset").length;
+    await harness.command("btw:clear", "");
+
+    expect(activeRecord.session.abort).toHaveBeenCalledTimes(1);
+    expect(activeRecord.session.dispose).toHaveBeenCalledTimes(1);
+    expect(activeRecord.getListenerCount()).toBe(0);
+
+    const resets = getCustomEntries(harness.entries, "btw-thread-reset");
+    expect(resets).toHaveLength(resetCountBeforeClear + 1);
+    expect(resets.at(-1)?.data).toMatchObject({ mode: "contextual" });
+    expect(harness.notifications.at(-1)).toEqual({ message: "Cleared BTW thread.", type: "info" });
+
+    await harness.runEvent("session_start");
+    await harness.command("btw", "");
+    overlay = harness.latestOverlayComponent();
+    expect(transcriptText(overlay)).toContain("No BTW thread yet. Ask a side question to start one.");
+
+    harness.entries.push({
+      type: "custom",
+      customType: "btw-thread-entry",
+      data: { question: "post-clear q", thinking: "", answer: "post-clear a", provider: "p", model: "m", thinkingLevel: "off", timestamp: 4 },
+    });
+
+    await harness.runEvent("session_tree");
+    await harness.command("btw", "");
+    overlay = harness.latestOverlayComponent();
+    const transcript = transcriptText(overlay);
+    expect(transcript).toContain("You  post-clear q");
+    expect(transcript).toContain("post-clear a");
+    expect(transcript).not.toContain("You  new q");
+  });
+
+  it("/btw:clear during active tool execution aborts the prompt, disposes the sub-session, and leaves no partial thread", async () => {
+    const harness = createHarness();
+    const blocking = createBlockingToolStream();
+    promptStreamMock.mockImplementation(() => blocking.stream());
+
+    await harness.runSessionStart();
+    const pendingCommand = harness.command("btw", "long running tool");
+    await flushAsyncWork();
+
+    const overlay = harness.latestOverlayComponent();
+    const overlayHandle = harness.overlayHandles.at(-1);
+    const activeRecord = subSessionRecords[0];
+    expect(overlay.statusText.text).toContain("running tool: read");
+    expect(activeRecord.getIsStreaming()).toBe(true);
+
+    await harness.command("btw:clear", "");
+    await flushAsyncWork();
+
+    expect(activeRecord.session.abort).toHaveBeenCalledTimes(1);
+    expect(activeRecord.session.dispose).toHaveBeenCalledTimes(1);
+    expect(activeRecord.getListenerCount()).toBe(0);
+    expect(activeRecord.getIsStreaming()).toBe(false);
+    expect(getCustomEntries(harness.entries, "btw-thread-entry")).toHaveLength(0);
+    expect(getCustomEntries(harness.entries, "btw-thread-reset")).toHaveLength(1);
+    expect(harness.notifications.at(-1)).toEqual({ message: "Cleared BTW thread.", type: "info" });
+    expect(overlayHandle?.hideCalls).toBe(1);
+
+    blocking.release();
+    await pendingCommand;
+
+    expect(getCustomEntries(harness.entries, "btw-thread-entry")).toHaveLength(0);
+
+    await harness.command("btw", "");
+    expect(transcriptText(harness.latestOverlayComponent())).toContain("No BTW thread yet. Ask a side question to start one.");
+  });
+
+  it("restore behavior is consistent across session_start and session_tree", async () => {
+    const entries: SessionEntry[] = [
+      { type: "custom", customType: "btw-thread-reset", data: { timestamp: 1, mode: "tangent" } },
+      { type: "custom", customType: "btw-thread-entry", data: { question: "restored q", thinking: "", answer: "restored a", provider: "p", model: "m", thinkingLevel: "off", timestamp: 2 } },
+    ];
+
+    for (const eventName of ["session_start", "session_tree"]) {
+      const harness = createHarness(entries);
+      await harness.runEvent(eventName);
+      await harness.command("btw", "");
+      const overlay = harness.latestOverlayComponent();
+      const transcript = transcriptText(overlay);
+      expect(transcript).toContain("You  restored q");
+      expect(transcript).toContain("restored a");
+      expect(overlay['modeText'].text).toContain("BTW tangent");
+    }
+  });
+
+  it("/btw:inject success extracts the active sub-session thread, disposes it, dismisses the overlay, and reopens fresh", async () => {
+    const harness = createHarness();
+    promptStreamMock.mockImplementation(() => streamAnswer("First answer"));
+
+    await harness.runSessionStart();
+    await harness.command("btw", "first question");
+
+    const overlayHandle = harness.overlayHandles.at(-1);
+    const record = subSessionRecords[0];
+    expect(overlayHandle).toBeDefined();
+    expect(overlayHandle?.isHidden()).toBe(false);
+
+    record.session.state.messages.push(
+      {
+        role: "user",
+        content: [{ type: "text", text: "second question" }],
+        timestamp: Date.now(),
+      },
+      makeAssistantMessage("Second answer"),
+    );
+
+    await harness.command("btw:inject", "Use this as supporting context.");
+
+    expect(harness.sentUserMessages).toHaveLength(1);
+    expect(harness.sentUserMessages[0]).toEqual({
+      content:
+        "Here is a side conversation I had. Use this as supporting context.\n\nUser: first question\nAssistant: First answer\n\n---\n\nUser: second question\nAssistant: Second answer",
+      options: undefined,
+    });
+    expect(getCustomEntries(harness.entries, "btw-thread-reset")).toHaveLength(1);
+    expect(record.session.dispose).toHaveBeenCalledTimes(1);
+    expect(overlayHandle?.hideCalls).toBe(1);
+    expect(harness.notifications.at(-1)).toEqual({
+      message: "Injected BTW thread (2 exchanges).",
+      type: "info",
+    });
+
+    await harness.command("btw", "");
+    const reopened = harness.latestOverlayComponent();
+    expect(transcriptText(reopened)).toContain("No BTW thread yet. Ask a side question to start one.");
+  });
+
+  it("/btw:inject while the main session is busy delivers to the main session as a follow-up", async () => {
+    const harness = createHarness();
+    promptStreamMock.mockImplementation(() => streamAnswer("Busy answer"));
+
+    await harness.runSessionStart();
+    await harness.command("btw", "busy question");
+    harness.setIdle(false);
+
+    await harness.command("btw:inject", "Queue this behind the active turn.");
+
+    expect(harness.sentUserMessages).toHaveLength(1);
+    expect(harness.sentUserMessages[0]).toEqual({
+      content: "Here is a side conversation I had. Queue this behind the active turn.\n\nUser: busy question\nAssistant: Busy answer",
+      options: { deliverAs: "followUp" },
+    });
+  });
+
+  it("/btw:inject with an empty sub-session warns without disposing the ready BTW session", async () => {
+    const harness = createHarness();
+
+    await harness.runSessionStart();
+    await harness.command("btw", "");
+
+    const overlay = harness.latestOverlayComponent();
+    const overlayHandle = harness.overlayHandles.at(-1);
+    const record = subSessionRecords[0];
+
+    await harness.command("btw:inject", "");
+
+    expect(harness.sentUserMessages).toHaveLength(0);
+    expect(record.session.dispose).not.toHaveBeenCalled();
+    expect(record.session.abort).not.toHaveBeenCalled();
+    expect(record.getListenerCount()).toBe(1);
+    expect(overlayHandle?.isHidden()).toBe(false);
+    expect(overlay.statusText.text).toContain("Ready. Enter submits; Escape dismisses without clearing.");
+    expect(transcriptText(overlay)).toContain("No BTW thread yet. Ask a side question to start one.");
+    expect(harness.notifications.at(-1)).toEqual({
+      message: "No BTW thread to inject.",
+      type: "warning",
+    });
+  });
+
+  it("/btw:summarize success summarizes the active sub-session thread, disposes it, dismisses the overlay, and reopens fresh", async () => {
+    const harness = createHarness();
+    promptStreamMock
+      .mockImplementationOnce(() => streamAnswer("First answer"))
+      .mockImplementationOnce((_record: unknown, text: string) => {
+        expect(text).toBe(
+          "User: first question\nAssistant: First answer\n\n---\n\nUser: second question\nAssistant: Second answer",
+        );
+        return streamAnswer("Short summary");
+      });
+
+    await harness.runSessionStart();
+    await harness.command("btw", "first question");
+
+    const overlayHandle = harness.overlayHandles.at(-1);
+    const record = subSessionRecords[0];
+    expect(overlayHandle).toBeDefined();
+
+    record.session.state.messages.push(
+      {
+        role: "user",
+        content: [{ type: "text", text: "second question" }],
+        timestamp: Date.now(),
+      },
+      makeAssistantMessage("Second answer"),
+    );
+
+    await harness.command("btw:summarize", "Hand this to the main agent.");
+
+    expect(createAgentSessionMock).toHaveBeenCalledTimes(2);
+    const summaryRecord = subSessionRecords[1];
+    expect(summaryRecord).toBeDefined();
+    expect(summaryRecord.options.tools).toEqual([]);
+    expect(summaryRecord.promptCalls[0]?.text).toBe(
+      "User: first question\nAssistant: First answer\n\n---\n\nUser: second question\nAssistant: Second answer",
+    );
+    expect(harness.sentUserMessages).toHaveLength(1);
+    expect(harness.sentUserMessages[0]).toEqual({
+      content: "Here is a summary of a side conversation I had. Hand this to the main agent.\n\nShort summary",
+      options: undefined,
+    });
+    expect(getCustomEntries(harness.entries, "btw-thread-reset")).toHaveLength(1);
+    expect(record.session.dispose).toHaveBeenCalledTimes(1);
+    expect(summaryRecord.session.dispose).toHaveBeenCalledTimes(1);
+    expect(overlayHandle?.hideCalls).toBe(1);
+    expect(harness.notifications.at(-1)).toEqual({
+      message: "Injected BTW summary (2 exchanges).",
+      type: "info",
+    });
+
+    await harness.command("btw", "");
+    const reopened = harness.latestOverlayComponent();
+    expect(transcriptText(reopened)).toContain("No BTW thread yet. Ask a side question to start one.");
+  });
+
+  it("summarize failure preserves BTW thread state and keeps the overlay recoverable", async () => {
+    const harness = createHarness();
+    promptStreamMock
+      .mockImplementationOnce(() => streamAnswer("First answer"))
+      .mockImplementationOnce(async function* () {
+        yield {
+          type: "error" as const,
+          error: {
+            ...makeAssistantMessage(""),
+            stopReason: "error" as const,
+            errorMessage: "Summary model exploded",
+          },
+        };
+      });
+
+    await harness.runSessionStart();
+    await harness.command("btw", "first question");
+
+    const overlayHandle = harness.overlayHandles.at(-1);
+    await harness.command("btw:summarize", "retry later");
+
+    expect(harness.sentUserMessages).toHaveLength(0);
+    expect(getCustomEntries(harness.entries, "btw-thread-entry")).toHaveLength(1);
+    expect(getCustomEntries(harness.entries, "btw-thread-reset")).toHaveLength(0);
+    expect(overlayHandle?.isHidden()).toBe(false);
+    expect(subSessionRecords[1]?.session.dispose).toHaveBeenCalledTimes(1);
+
+    const overlay = harness.latestOverlayComponent();
+    overlay.refresh();
+    expect(overlay.statusText.text).toContain("Summarize failed. Thread preserved for retry or injection.");
+    expect(transcriptText(overlay)).toContain("You  first question");
+    expect(transcriptText(overlay)).toContain("First answer");
+    expect(harness.notifications.at(-1)).toEqual({
+      message: "Summary model exploded",
+      type: "error",
+    });
+  });
+
+  it("in-modal /btw:new reuses command semantics by resetting the thread and reopening contextual mode", async () => {
+    const harness = createHarness();
+    promptStreamMock
+      .mockImplementationOnce(() => streamAnswer("First answer"))
+      .mockImplementationOnce(() => streamAnswer("Replacement answer"));
+
+    await harness.runSessionStart();
+    await harness.command("btw", "first question");
+
+    const overlay = harness.latestOverlayComponent();
+    overlay.input.onSubmit?.("/btw:new replacement question");
+    await flushAsyncWork();
+
+    const resets = getCustomEntries(harness.entries, "btw-thread-reset");
+    expect(resets).toHaveLength(1);
+    expect(resets.at(-1)?.data).toMatchObject({ mode: "contextual" });
+
+    const transcript = transcriptText(overlay);
+    expect(transcript).not.toContain("You  first question");
+    expect(transcript).not.toContain("First answer");
+    expect(transcript).toContain("You  replacement question");
+    expect(transcript).toContain("Replacement answer");
+    expect(overlay['modeText'].text).toContain("BTW");
+  });
+
+  it("in-modal /btw:tangent reuses command semantics by switching modes and dropping inherited main-session context", async () => {
+    const mainRegularUser = {
+      type: "message",
+      role: "user",
+      content: [{ type: "text", text: "main session task" }],
+      timestamp: Date.now(),
+    } as SessionEntry;
+    const harness = createHarness([mainRegularUser]);
+
+    await harness.runSessionStart();
+    await harness.command("btw", "contextual start");
+
+    const overlay = harness.latestOverlayComponent();
+    overlay.input.onSubmit?.("/btw:tangent tangent start");
+    await flushAsyncWork();
+
+    const resets = getCustomEntries(harness.entries, "btw-thread-reset");
+    expect(resets).toHaveLength(1);
+    expect(resets.at(-1)?.data).toMatchObject({ mode: "tangent" });
+
+    const streamCalls = promptStreamMock.mock.calls as Array<[unknown, string, StreamContext]>;
+    const tangentCall = [...streamCalls].reverse().find((call) => {
+      const texts = call[2].messages.map((message) => (message.content[0] as any)?.text ?? "");
+      return texts.at(-1) === "tangent start";
+    });
+    expect(tangentCall).toBeDefined();
+    const tangentTexts = tangentCall![2].messages.map((message) => (message.content[0] as any)?.text ?? "");
+    expect(tangentTexts).not.toContain("main session task");
+
+    const transcript = transcriptText(overlay);
+    expect(transcript).toContain("You  tangent start");
+    expect(transcript).toContain("default:tangent start");
+    expect(transcript).not.toContain("You  contextual start");
+    expect(overlay['modeText'].text).toContain("BTW tangent");
+  });
+
+  it("in-modal /btw:inject reuses command semantics by handing off to the main session and dismissing the overlay", async () => {
+    const harness = createHarness();
+    promptStreamMock.mockImplementation(() => streamAnswer("First answer"));
+
+    await harness.runSessionStart();
+    await harness.command("btw", "first question");
+
+    const overlay = harness.latestOverlayComponent();
+    const overlayHandle = harness.overlayHandles.at(-1);
+    overlay.input.onSubmit?.("/btw:inject Use this in the main run.");
+    await flushAsyncWork();
+
+    expect(harness.sentUserMessages).toHaveLength(1);
+    expect(harness.sentUserMessages[0]).toEqual({
+      content: "Here is a side conversation I had. Use this in the main run.\n\nUser: first question\nAssistant: First answer",
+      options: undefined,
+    });
+    expect(getCustomEntries(harness.entries, "btw-thread-reset")).toHaveLength(1);
+    expect(overlayHandle?.hideCalls).toBe(1);
+  });
+
+  it("routes non-BTW slash input in the modal through the BTW sub-session prompt without fallback warnings", async () => {
+    const harness = createHarness();
+    promptStreamMock
+      .mockImplementationOnce(() => streamAnswer("First answer"))
+      .mockImplementationOnce(() => streamAnswer("Slash answer"));
+
+    await harness.runSessionStart();
+    await harness.command("btw", "first question");
+
+    const overlay = harness.latestOverlayComponent();
+    const record = subSessionRecords[0];
+    const sentUserMessagesBefore = harness.sentUserMessages.length;
+    const resetCountBefore = getCustomEntries(harness.entries, "btw-thread-reset").length;
+
+    overlay.input.onSubmit?.("/plan do something else");
+    await flushAsyncWork();
+
+    expect(record.session.prompt).toHaveBeenLastCalledWith("/plan do something else", { source: "extension" });
+    expect(record.promptCalls.at(-1)?.text).toBe("/plan do something else");
+    expect(((record.promptCalls.at(-1)?.context.messages.at(-1)?.content[0] as any)?.text) ?? "").toBe(
+      "/plan do something else",
+    );
+    expect(promptStreamMock.mock.calls).toHaveLength(2);
+    expect(harness.sentUserMessages).toHaveLength(sentUserMessagesBefore);
+    expect(getCustomEntries(harness.entries, "btw-thread-reset")).toHaveLength(resetCountBefore);
+    expect(getCustomEntries(harness.entries, "btw-thread-entry")).toHaveLength(2);
+    expect(harness.notifications.some((entry) => entry.message.includes("Unsupported slash input in BTW"))).toBe(false);
+    expect(overlay.statusText.text).toContain("Ready for a follow-up");
+    expect(transcriptText(overlay)).toContain("You  /plan do something else");
+    expect(transcriptText(overlay)).toContain("Slash answer");
+  });
+
+  it("preserves the BTW thread and recoverability when routed slash input fails", async () => {
+    const harness = createHarness();
+    promptStreamMock
+      .mockImplementationOnce(() => streamAnswer("First answer"))
+      .mockImplementationOnce(async function* () {
+        yield {
+          type: "error" as const,
+          error: {
+            ...makeAssistantMessage(""),
+            stopReason: "error" as const,
+            errorMessage: "Slash dispatch exploded",
+          },
+        };
+      });
+
+    await harness.runSessionStart();
+    await harness.command("btw", "first question");
+
+    const overlay = harness.latestOverlayComponent();
+    const record = subSessionRecords[0];
+    overlay.input.onSubmit?.("/plan fail loudly");
+    await flushAsyncWork();
+
+    expect(record.session.prompt).toHaveBeenLastCalledWith("/plan fail loudly", { source: "extension" });
+    expect(getCustomEntries(harness.entries, "btw-thread-entry")).toHaveLength(1);
+    expect(getCustomEntries(harness.entries, "btw-thread-reset")).toHaveLength(0);
+    expect(harness.sentUserMessages).toHaveLength(0);
+    expect(overlay.statusText.text).toContain("Request failed. Thread preserved for retry or follow-up.");
+    expect(transcriptText(overlay)).toContain("You  first question");
+    expect(transcriptText(overlay)).toContain("First answer");
+    expect(transcriptText(overlay)).toContain("You  /plan fail loudly");
+    expect(transcriptText(overlay)).toContain("❌ Slash dispatch exploded");
+    expect(harness.notifications.at(-1)).toEqual({
+      message: "Slash dispatch exploded",
+      type: "error",
+    });
+  });
+
+  it("ordinary BTW follow-up submit and Escape dismissal do not send content to the main session", async () => {
+    const harness = createHarness();
+    promptStreamMock
+      .mockImplementationOnce(() => streamAnswer("First answer"))
+      .mockImplementationOnce(() => streamAnswer("Second answer"));
+
+    await harness.runSessionStart();
+    await harness.command("btw", "first question");
+
+    const overlay = harness.latestOverlayComponent();
+    overlay.input.onSubmit?.("follow-up question");
+    await flushAsyncWork();
+    overlay.input.onEscape?.();
+    await flushAsyncWork();
+
+    expect(harness.sentUserMessages).toHaveLength(0);
+    expect(getCustomEntries(harness.entries, "btw-thread-entry")).toHaveLength(2);
+    expect(harness.overlayHandles.at(-1)?.hideCalls).toBe(1);
+  });
+
+  it("context filtering excludes BTW notes from main-session context while leaving non-BTW messages intact", async () => {
+    const harness = createHarness();
+    const results = await harness.runEvent("context", {
+      messages: [
+        { role: "user", content: [{ type: "text", text: "keep me" }] },
+        { role: "custom", customType: "btw-note", content: "drop me" },
+        { role: "assistant", content: [{ type: "text", text: "keep assistant" }] },
+      ],
+    });
+
+    expect(results).toHaveLength(1);
+    expect(results[0]).toEqual({
+      messages: [
+        { role: "user", content: [{ type: "text", text: "keep me" }] },
+        { role: "assistant", content: [{ type: "text", text: "keep assistant" }] },
+      ],
+    });
+  });
+
+  it("keeps every overlay line within the supplied width when the draft is longer than the terminal", async () => {
+    const harness = createHarness();
+    await harness.runSessionStart();
+    await harness.command("btw", "");
+    const overlay = harness.latestOverlayComponent();
+
+    overlay.setDraft("x".repeat(200));
+    const lines = overlay.render(79) as string[];
+    const inputLine = lines.at(-3) ?? "";
+
+    expect(lines.every((line) => visibleWidth(line) <= 79)).toBe(true);
+    expect(visibleWidth(inputLine)).toBe(79);
+    expect(inputLine.endsWith("│")).toBe(true);
+  });
+
+  describe("xz overlay", () => {
+    it("shows focus explicitly and preserves the real Input cursor marker without a border notch", async () => {
+      const actual = await vi.importActual<typeof import("@earendil-works/pi-tui")>("@earendil-works/pi-tui");
+      const harness = createHarness();
+      await harness.command("btw", "");
+      const overlay = harness.latestOverlayComponent();
+      Object.defineProperty(overlay, "input", { value: new actual.Input() });
+      overlay.focused = true;
+      overlay.input.setValue("中文 English ".repeat(25));
+      const active = overlay.render(80);
+      expect(active[1]).toContain("input: BTW");
+      expect(active.at(-3)).toContain(actual.CURSOR_MARKER);
+      expect(actual.visibleWidth(active.at(-3)!)).toBe(80);
+      expect(active.at(-3)).toMatch(/│$/);
+      overlay.focused = false;
+      const inactive = overlay.render(80);
+      expect(inactive[1]).toContain("input: main");
+      expect(inactive.at(-3)).not.toContain(actual.CURSOR_MARKER);
+      expect(inactive.at(-3)).not.toContain("\x1b[7m");
+      expect(overlay.getDraft()).toBe("中文 English ".repeat(25));
+    });
+
+    it.each([
+      ["regular", "ctrl+shift+b", "\x1b[98;6u"],
+      ["fullscreen", "ctrl+shift+b", "\x1b[98;6u"],
+      ["regular", "ctrl+shift+b", "\x1b[98;6u", "g"],
+      ["regular", "ctrl+shift+b", "\x1b[98;6u", "d"],
+      ["fullscreen", "ctrl+shift+b", "\x1b[98;6u", ":"],
+    ])("routes focus both ways in real %s Pi with %s [case %#]", async (mode, shortcut, sequence, vimState) => {
+      const actual = await vi.importActual<typeof import("@earendil-works/pi-tui")>("@earendil-works/pi-tui");
+      let input!: (data: string) => void;
+      const terminal = {
+        columns: 120, rows: 40, kittyProtocolActive: false,
+        start(onInput: (data: string) => void) { input = onInput; },
+        stop() {}, write() {}, moveBy() {}, hideCursor() {}, showCursor() {},
+        clearLine() {}, clearFromCursor() {}, clearScreen() {}, setTitle() {}, setProgress() {}, setProgramStatus() {},
+        async drainInput() {},
+      };
+      const tui = mode === "regular" ? new actual.TuiMainScreen(terminal) : new actual.TuiAltScreen(terminal);
+      const harness = createHarness([], { tui });
+      const { XzModalEditor } = await import("../../xz-pi-vim/src/modal-editor.js");
+      const vim = vimState ? new XzModalEditor(tui as any, {
+        ...harness.baseCtx.ui.theme, borderColor: (value: string) => value, selectList: {},
+      } as any, { matches: () => false } as any, { startInNormal: true, cursorShape: false }) : undefined;
+      const mainInput = vim ?? new actual.Input();
+      const mainEvents: string[] = [];
+      if (vim) {
+        vim.onExtensionShortcut = (data) => {
+          if (!actual.matchesKey(data, shortcut as any)) return false;
+          void harness.shortcut(shortcut);
+          return true;
+        };
+        vim.handleInput(vimState);
+      }
+      const mainHandle = mainInput.handleInput.bind(mainInput);
+      mainInput.handleInput = (data) => {
+        if (!vim && actual.matchesKey(data, shortcut as any)) {
+          void harness.shortcut(shortcut);
+          return;
+        }
+        mainEvents.push(data);
+        mainHandle(data);
+      };
+      let overlay: any;
+      let handle: ReturnType<typeof tui.showOverlay> | undefined;
+      let finish!: () => void;
+      // Match InteractiveMode.showExtensionCustom: factory first, then onHandle.
+      harness.baseCtx.ui.custom = async (factory: any, options: any) => {
+        const promise = new Promise<void>((resolve) => {
+          finish = () => { handle?.hide(); resolve(); };
+        });
+        overlay = await factory(tui, harness.baseCtx.ui.theme, { matches: () => false }, finish);
+        handle = tui.showOverlay(overlay, options.overlayOptions);
+        options.onHandle?.(handle);
+        return promise;
+      };
+      tui.addChild(mainInput);
+      tui.setFocus(mainInput);
+      tui.start();
+      try {
+        await harness.command("btw", "");
+        await flushAsyncWork();
+        expect(handle?.isFocused()).toBe(true);
+        expect(mainInput.focused).toBe(false);
+        const sideInput = vi.spyOn(overlay.input, "handleInput");
+        input(sequence);
+        await flushAsyncWork();
+        expect(handle?.isFocused()).toBe(false);
+        expect(mainInput.focused).toBe(true);
+        if (!vim) {
+          input("MAIN_TEXT");
+          expect(mainEvents).toEqual(["MAIN_TEXT"]);
+        }
+        expect(sideInput).not.toHaveBeenCalled();
+        input(sequence);
+        await flushAsyncWork();
+        expect(handle?.isFocused()).toBe(true);
+        expect(mainInput.focused).toBe(false);
+        input("BTW_TEXT");
+        expect(sideInput).toHaveBeenCalledWith("BTW_TEXT");
+        if (vim) {
+          expect(vim.getText()).toBe("");
+          // Verify main editing after escaping a pending Vim command, without
+          // relying on the test wrapper to dispatch extension shortcuts.
+          input(sequence);
+          input("\x1b");
+          input("i");
+          input("MAIN_TEXT");
+          expect(vim.getText()).toBe("MAIN_TEXT");
+          input(sequence);
+          expect(handle?.isFocused()).toBe(true);
+        } else expect((mainInput as InstanceType<typeof actual.Input>).getValue()).toBe("MAIN_TEXT");
+        expect(handle?.isHidden()).toBe(false);
+      } finally {
+        await harness.command("btw:clear");
+        finish?.();
+        tui.stop();
+      }
+    });
+
+    it.each([true, false])("uses real Pi selection/copy and wheel routing with copyOnSelect=%s", async (copyOnSelect, context) => {
+      const actual = await vi.importActual<typeof import("@earendil-works/pi-tui")>("@earendil-works/pi-tui");
+      // Older Pi hosts delegate selection to the outer terminal instead.
+      if (!("TuiAltScreen" in actual)) context.skip();
+      let input!: (data: string) => void;
+      const copies: string[] = [];
+      const terminal = {
+        columns: 120, rows: 40, kittyProtocolActive: false,
+        start(onInput: (data: string) => void) { input = onInput; },
+        stop() {}, write() {}, moveBy() {}, hideCursor() {}, showCursor() {},
+        clearLine() {}, clearFromCursor() {}, clearScreen() {}, setTitle() {}, setProgress() {}, setProgramStatus() {},
+        async drainInput() {},
+      };
+      const tui = new actual.TuiAltScreen(terminal, false, undefined, {
+        copyOnSelect, wheelScrollLines: 3,
+        copySelection: async (text: string) => { copies.push(text); return true; },
+      });
+      const harness = createHarness([], {
+        tui,
+        keybindingMatches: (data, id) => id === "app.message.copy" && data === "\x18",
+      });
+      promptStreamMock.mockImplementationOnce(() => streamAnswer(Array.from({ length: 100 }, (_, i) => `line-${i} SELECTEDANSWER`).join("\n")));
+      let handle: ReturnType<typeof tui.showOverlay> | undefined;
+      try {
+        await harness.command("btw", "long reply");
+        const overlay = harness.latestOverlayComponent();
+        tui.addChild(new actual.Text("PARENT_ANSWER_MUST_NOT_BE_COPIED", 0, 0));
+        handle = tui.showOverlay(overlay, harness.overlays.at(-1)?.factoryOptions?.overlayOptions as any);
+        handle.focus();
+        tui.start();
+        tui.renderNow(true);
+        expect(handle.getBounds()?.height).toBe(36);
+        // Pi 0.85.1 has the same rendered buffer but no public frame accessor.
+        const lines: string[] = typeof tui.getScreenLines === "function"
+          ? tui.getScreenLines()
+          : (tui as unknown as { previousScreen: string[] }).previousScreen;
+        const y = lines.findIndex((line) => line.includes("SELECTEDANSWER"));
+        expect(y).toBeGreaterThanOrEqual(0);
+        const x = actual.stripTerminalSequences(lines[y]).indexOf("SELECTEDANSWER");
+        const end = x + "SELECTEDANSWER".length - 1;
+        input(`\x1b[<0;${x + 1};${y + 1}M`);
+        input(`\x1b[<32;${end + 1};${y + 1}M`);
+        input(`\x1b[<0;${end + 1};${y + 1}m`);
+        await flushAsyncWork();
+        expect(tui.hasActiveSelection()).toBe(true);
+        if (!copyOnSelect) {
+          expect(copies).toEqual([]);
+          input("\x18"); // Pi's default app.message.copy binding, with BTW focused.
+          await flushAsyncWork();
+        }
+        expect(copies).toEqual(["SELECTEDANSWER"]);
+        const before = overlay.transcriptScrollOffset;
+        input(`\x1b[<64;${x + 1};${y + 1}M`);
+        expect(overlay.transcriptScrollOffset).toBe(before - 3);
+        expect(overlay.getDraft()).toBe("");
+        expect(harness.sentUserMessages).toEqual([]);
+      } finally {
+        handle?.hide();
+        tui.stop();
+        await harness.command("btw:clear");
+      }
+    });
+
+    it("uses ninety-percent width and height", async () => {
+      const harness = createHarness();
+      await harness.command("btw", "");
+      expect(harness.overlays.at(-1)?.factoryOptions?.overlayOptions).toMatchObject({
+        width: "90%", maxHeight: "90%", nonCapturing: true,
+      });
+    });
+
+    it("uses the pane height without a thirty-two-row cap", async () => {
+      const harness = createHarness();
+      harness.tui.terminal.rows = 80;
+      await harness.command("btw", "");
+      const overlay = harness.latestOverlayComponent();
+      expect(overlay.render(100)).toHaveLength(72);
+      harness.tui.terminal.rows = 24;
+      expect(overlay.render(100)).toHaveLength(21);
+      harness.tui.terminal.rows = 8;
+      const small = overlay.render(20);
+      expect(small.length).toBeLessThanOrEqual(7);
+      expect(small.join("\n")).toContain(">");
+    });
+
+    it("does not enable mouse capture in regular mode", async () => {
+      const harness = createHarness([], { tuiMode: "regular" });
+      await harness.command("btw", "");
+      const overlay = harness.latestOverlayComponent();
+      expect(harness.terminalWrites).toEqual([]);
+      overlay.dispose?.();
+      expect(harness.terminalWrites).toEqual([]);
+    });
+
+    it("routes normalized wheel events into the transcript without stealing selection", async () => {
+      const harness = createHarness([], { tuiMode: "fullscreen" });
+      promptStreamMock.mockImplementationOnce(() => streamAnswer(Array.from({ length: 100 }, (_, i) => `line-${i}`).join("\n")));
+      await harness.command("btw", "long answer");
+      const overlay = harness.latestOverlayComponent();
+      overlay.render(80);
+      const initial = overlay.transcriptScrollOffset;
+      expect(overlay.handleMouse?.({ type: "wheel", wheelDelta: -4 })).toMatchObject({ handled: true });
+      expect(overlay.transcriptScrollOffset).toBe(initial - 4);
+      overlay.handleMouse({ type: "wheel", wheelDelta: 2 });
+      expect(overlay.transcriptScrollOffset).toBe(initial - 2);
+      for (const type of ["press", "drag", "release", "click", "move"]) {
+        expect(overlay.handleMouse({ type, button: "left" })).toBeUndefined();
+      }
+      const spy = vi.spyOn(overlay.input, "handleInput");
+      overlay.handleInput("\x1b[<0;10;10M");
+      overlay.handleInput("\x1b[<32;11;10M");
+      overlay.handleInput("\x1b[<0;11;10m");
+      expect(spy).not.toHaveBeenCalled();
+      expect(overlay.getDraft()).toBe("");
+    });
+
+    it("uses the configured Pi copy action and clipboard path", async () => {
+      const harness = createHarness([], { tuiMode: "fullscreen", keybindingMatches: (data, id) => id === "app.message.copy" && data === "configured-copy" });
+      const copy = vi.fn(async () => true);
+      harness.tui.hasActiveSelection = () => true;
+      harness.tui.copyActiveSelectionToClipboard = copy;
+      await harness.command("btw", "");
+      const overlay = harness.latestOverlayComponent();
+      const input = vi.spyOn(overlay.input, "handleInput");
+      overlay.handleInput("configured-copy");
+      await flushAsyncWork();
+      expect(copy).toHaveBeenCalledTimes(1);
+      expect(input).not.toHaveBeenCalled();
+      expect(harness.api.getCommands().some((command) => command.name === "btw:copy")).toBe(false);
+    });
+
+    it("scrolls with legacy wheel and keyboard events and resumes follow at the bottom", async () => {
+      const harness = createHarness();
+      promptStreamMock.mockImplementationOnce(() => streamAnswer(Array.from({ length: 100 }, (_, i) => `line-${i}`).join("\n")));
+      await harness.command("btw", "scroll");
+      const overlay = harness.latestOverlayComponent();
+      overlay.render(80);
+      const bottom = overlay.transcriptScrollOffset;
+      overlay.handleInput("\x1b[<64;10;10M");
+      expect(overlay.transcriptScrollOffset).toBe(bottom - 3);
+      overlay.handleInput("\x1b[A");
+      expect(overlay.transcriptScrollOffset).toBe(bottom - 4);
+      overlay.handleInput("\x1b[5~");
+      expect(overlay.transcriptScrollOffset).toBeLessThan(bottom - 4);
+      overlay.handleInput("\x1b[6~");
+      overlay.handleInput("\x1b[B");
+      overlay.handleInput("\x1b[<65;10;10M");
+      overlay.render(80);
+      expect(overlay.transcriptScrollOffset).toBe(bottom);
+      expect(overlay.followTranscript).toBe(true);
+      expect(harness.sentUserMessages).toEqual([]);
+    });
+  });
+
+  describe("overlay render height vs maxHeight", () => {
+    function resolveOverlayMaxHeight(rows: number): number {
+      const marginTop = 1;
+      const availHeight = Math.max(1, rows - marginTop);
+      const parsed = Math.floor((rows * 90) / 100);
+      return Math.max(1, Math.min(parsed, availHeight));
+    }
+
+    function withStdoutRows(rows: number): { restore: () => void } {
+      const stdout = process.stdout as NodeJS.WriteStream & { rows?: number };
+      const descriptor = Object.getOwnPropertyDescriptor(stdout, "rows");
+      Object.defineProperty(stdout, "rows", { value: rows, configurable: true });
+      return {
+        restore() {
+          if (descriptor) {
+            Object.defineProperty(stdout, "rows", descriptor);
+          } else {
+            delete (stdout as { rows?: number }).rows;
+          }
+        },
+      };
+    }
+
+    for (const rows of [24, 30, 35, 42, 50]) {
+      it(`render() fits maxHeight and keeps bottom border at ${rows} rows`, async () => {
+        const { restore } = withStdoutRows(rows);
+        try {
+          const harness = createHarness();
+          await harness.runSessionStart();
+          await harness.command("btw", "");
+          const overlay = harness.latestOverlayComponent();
+          const lines = overlay.render(80) as string[];
+          const maxHeight = resolveOverlayMaxHeight(rows);
+          expect(lines.length).toBeLessThanOrEqual(maxHeight);
+          expect(lines.at(-1)).toMatch(/└/);
+        } finally {
+          restore();
+        }
+      });
+    }
+  });
+});
+describe("configurable BTW focus shortcuts", () => {
+  it("uses the built-in defaults when PI_BTW_FOCUS_KEYS is unset or blank", () => {
+    expect(resolveBtwFocusShortcuts({})).toEqual(["ctrl+shift+b"]);
+    expect(resolveBtwFocusShortcuts({ PI_BTW_FOCUS_KEYS: "   " })).toEqual(["ctrl+shift+b"]);
+  });
+
+  it("replaces the defaults with a normalized, de-duplicated override list", () => {
+    expect(
+      resolveBtwFocusShortcuts({ PI_BTW_FOCUS_KEYS: "Ctrl+/ , ctrl+alt+b, CTRL+/ " }),
+    ).toEqual(["ctrl+/", "ctrl+alt+b"]);
+  });
+
+  it("drops unparseable entries but keeps the valid ones", () => {
+    expect(
+      resolveBtwFocusShortcuts({ PI_BTW_FOCUS_KEYS: "cmd+/,ctrl+/,control+x,super+enter" }),
+    ).toEqual(["ctrl+/", "super+enter"]);
+  });
+
+  it("falls back to defaults when no override entry is usable", () => {
+    expect(resolveBtwFocusShortcuts({ PI_BTW_FOCUS_KEYS: "cmd+/, bogus+++" })).toEqual([
+      "ctrl+shift+b",
+    ]);
+  });
+
+  it("validates identifiers against the pi-tui key grammar", () => {
+    expect(isValidFocusShortcut("ctrl+/")).toBe(true);
+    expect(isValidFocusShortcut("super+enter")).toBe(true);
+    expect(isValidFocusShortcut("f5")).toBe(true);
+    expect(isValidFocusShortcut("a")).toBe(true);
+    expect(isValidFocusShortcut("cmd+/")).toBe(false);
+    expect(isValidFocusShortcut("control+x")).toBe(false);
+    expect(isValidFocusShortcut("ctrl+ctrl+/")).toBe(false);
+    expect(isValidFocusShortcut("ctrl+")).toBe(false);
+    expect(isValidFocusShortcut("")).toBe(false);
+  });
+
+  it("describes shortcuts with a human-readable label", () => {
+    expect(describeFocusShortcuts(["ctrl+shift+b"])).toBe("Ctrl+Shift+B");
+    expect(describeFocusShortcuts(["ctrl+/"])).toBe("Ctrl+/");
+    expect(describeFocusShortcuts([])).toBe("");
+  });
+});
+
+describe("Pi SessionManager context integration", () => {
+  it("initializes AgentSession messages from the child SessionManager", async () => {
+    const {
+      createAgentSession: createActualAgentSession,
+      createExtensionRuntime,
+      SessionManager: ActualSessionManager,
+    } = await vi.importActual<typeof import("@earendil-works/pi-coding-agent")>("@earendil-works/pi-coding-agent");
+    const agentDir = await mkdtemp(join(tmpdir(), "pi-btw-agent-test-"));
+    const sessionManager = ActualSessionManager.inMemory(process.cwd());
+    const seedMessage = {
+      role: "user" as const,
+      content: [{ type: "text" as const, text: "inherited main-session context" }],
+      timestamp: Date.now(),
+    };
+    sessionManager.appendMessage(seedMessage);
+
+    const runtime = createExtensionRuntime();
+    const resourceLoader = {
+      getExtensions: () => ({ extensions: [], errors: [], runtime }),
+      getSkills: () => ({ skills: [], diagnostics: [] }),
+      getPrompts: () => ({ prompts: [], diagnostics: [] }),
+      getThemes: () => ({ themes: [], diagnostics: [] }),
+      getAgentsFiles: () => ({ agentsFiles: [] }),
+      getSystemPrompt: () => "",
+      getSystemPromptSource: () => undefined,
+      getAppendSystemPrompt: () => [],
+      getAppendSystemPromptSources: () => [],
+      extendResources: () => {},
+      reload: async () => {},
+    };
+
+    let disposeSession: (() => void | Promise<void>) | undefined;
+    try {
+      const { session } = await createActualAgentSession({
+        agentDir,
+        sessionManager,
+        resourceLoader: resourceLoader as any,
+        tools: [],
+        noTools: "all",
+      });
+      disposeSession = () => session.dispose();
+
+      expect(session.state.messages).toEqual([seedMessage]);
+    } finally {
+      await disposeSession?.();
+      await rm(agentDir, { recursive: true, force: true });
+    }
+  });
+});

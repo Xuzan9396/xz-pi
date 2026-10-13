@@ -195,6 +195,40 @@ export async function toggleModelDefault(
   return { defaults: read(), changed: true };
 }
 
+export interface InvalidDefaultReference {
+  layer: PreferenceLayer;
+  kind: "provider" | "model";
+  provider: string;
+  id?: string;
+}
+
+export function cleanupInvalidModelDefaults(
+  paths: PiSettingsPaths,
+  catalogModels: readonly Model<any>[],
+  providerIds: readonly string[],
+  options: { projectTrusted: boolean },
+): InvalidDefaultReference[] {
+  const knownProviders = new Set(providerIds);
+  const knownModels = new Set(catalogModels.map(model => `${model.provider}/${model.id}`));
+  const removed: InvalidDefaultReference[] = [];
+  for (const layer of (["global", "project"] as const)) {
+    if (layer === "project" && !options.projectTrusted) continue;
+    const path = paths[layer];
+    if (!existsSync(path)) continue;
+    const raw = readSettingsObject(path);
+    const provider = typeof raw.defaultProvider === "string" ? raw.defaultProvider : undefined;
+    const id = typeof raw.defaultModel === "string" ? raw.defaultModel : undefined;
+    if (!provider && !id) continue;
+    const kind = !provider || !knownProviders.has(provider) ? "provider" : !id || !knownModels.has(`${provider}/${id}`) ? "model" : undefined;
+    if (!kind) continue;
+    removed.push({ layer, kind, provider: provider ?? "unknown", ...(id ? { id } : {}) });
+    delete raw.defaultProvider; delete raw.defaultModel;
+    mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+    writeFileSync(path, `${JSON.stringify(raw, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+  }
+  return removed;
+}
+
 export interface ProjectDefaultsCleanupResult {
   modelDefaultCleared: boolean;
   skippedReason?: string;

@@ -1,8 +1,10 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { readStoredCredential } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
+import { readAccountAliases } from "./src/account-aliases.js";
 import { readUsageCache } from "./src/cache.js";
 import { formatDashboard, formatReset, readAuthProviderOrder } from "./src/format.js";
+import { CompactUsageFooter } from "./src/footer.js";
 import { clean } from "./src/http.js";
 import { createHerdrBridge } from "./src/herdr-bridge.js";
 import { REFRESH_INTERVAL_MS, refreshUsage } from "./src/refresh.js";
@@ -16,6 +18,9 @@ interface TimerApi {
 }
 
 function footerProvider(providerId: string, name: string): string {
+  if (providerId === "openai" || (providerId.startsWith("openai-") && !providerId.startsWith("openai-codex"))) {
+    return `${clean(providerId, 40)}:`;
+  }
   if (providerId === "openai-codex-personal") return "◎p";
   if (providerId === "openai-codex-work") return "◎w";
   if (providerId === "openai-codex") return "◎";
@@ -80,15 +85,29 @@ export function createXzPiUsage(timers: TimerApi = { setInterval, clearInterval 
     function render(ctx: ExtensionContext): void {
       if (!ctx.hasUI) return;
       const text = formatFooter(snapshots, ctx.model?.provider);
-      ctx.ui.setStatus(STATUS_ID, text ? ctx.ui.theme.fg("muted", text) : undefined);
+      ctx.ui.setStatus(STATUS_ID, text ? ctx.ui.theme.fg("text", text) : undefined);
+      if (ctx.mode !== "tui") return;
+      ctx.ui.setFooter((tui, theme, footerData) => {
+        const footer = new CompactUsageFooter(ctx, theme, footerData);
+        const unsubscribe = footerData.onBranchChange(() => tui.requestRender());
+        return {
+          render: (width) => footer.render(width),
+          invalidate: () => footer.invalidate(),
+          dispose: unsubscribe,
+        };
+      });
     }
 
     async function refresh(ctx: ExtensionContext, force = false): Promise<UsageSnapshot[]> {
       const current = ++generation;
-      const providerIds = await readAuthProviderOrder();
+      const [providerIds, aliases] = await Promise.all([
+        readAuthProviderOrder(),
+        readAccountAliases(),
+      ]);
       const cache = await refreshUsage(ctx, {
         force,
         providerIds,
+        aliases,
         readCredential: readStoredCredential,
       });
       if (current === generation && ctx === activeContext) {
@@ -169,7 +188,10 @@ export function createXzPiUsage(timers: TimerApi = { setInterval, clearInterval 
       generation += 1;
       stopTimer();
       activeContext = undefined;
-      if (ctx.hasUI) ctx.ui.setStatus(STATUS_ID, undefined);
+      if (ctx.hasUI) {
+        ctx.ui.setStatus(STATUS_ID, undefined);
+        if (ctx.mode === "tui") ctx.ui.setFooter(undefined);
+      }
     });
   };
 }

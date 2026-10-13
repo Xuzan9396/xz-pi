@@ -3,6 +3,38 @@ import test from "node:test";
 import { CURSOR_MARKER } from "@earendil-works/pi-tui";
 import { createEditor, send } from "./harness.js";
 
+for (const [mode, setup] of [
+  ["INSERT", ["i"]],
+  ["NORMAL", []],
+  ["pending-g", ["g"]],
+  ["pending-operator", ["d"]],
+  ["EX", [":"]],
+  ["VISUAL", ["v"]],
+] as const) {
+  test(`extension focus shortcuts are forwarded in ${mode}`, () => {
+    for (const key of ["\x1b/", "\x1b\x17", "\x1b[47;9u"]) {
+      const text = mode === "pending-g" ? "hello\nworld" : "hello";
+      const editor = createEditor(text);
+      if (mode === "pending-g") send(editor, ["G"]);
+      send(editor, setup);
+      let calls = 0;
+      editor.onExtensionShortcut = (data) => { calls++; return data === key; };
+      editor.handleInput(key);
+      assert.equal(calls, 1);
+      assert.equal(editor.getText(), text);
+      if (mode === "pending-operator") {
+        editor.handleInput("d");
+        assert.equal(editor.getText(), "");
+      }
+      if (mode === "pending-g") {
+        editor.handleInput("g");
+        assert.deepEqual(editor.getCursor(), { line: 0, col: 0 });
+      }
+      if (mode === "EX") assert.equal(editor.getMode(), "ex");
+    }
+  });
+}
+
 test("escape enters NORMAL and i returns to INSERT", () => {
   const editor = createEditor("hello");
   assert.equal(editor.getMode(), "normal");

@@ -122,6 +122,11 @@ export class XzModalEditor extends CustomEditor {
   }
 
   override handleInput(data: string): void {
+    // These Vim states otherwise consume input before CustomEditor can dispatch
+    // extension shortcuts (e.g. BTW focus). Keep the pending edit intact when
+    // a shortcut handles the key; ordinary INSERT/NORMAL still delegate once.
+    if ((this.pendingExCommand !== null || this.pendingG || this.pendingOperator !== null) &&
+        this.onExtensionShortcut?.(data)) return;
     if (isEscapeInput(data)) {
       this.handleEscape(data);
       return;
